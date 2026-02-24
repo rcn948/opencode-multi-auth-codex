@@ -50,6 +50,52 @@ function extractRequestUrl(input) {
         return input.toString();
     return input.url;
 }
+function resolveRequestMethod(input, init) {
+    if (init?.method)
+        return init.method;
+    if (input instanceof Request && input.method)
+        return input.method;
+    return 'POST';
+}
+function resolveRequestHeaders(input, init) {
+    const headers = new Headers(input instanceof Request ? input.headers : undefined);
+    const override = new Headers(init?.headers || {});
+    for (const [key, value] of override.entries()) {
+        headers.set(key, value);
+    }
+    return headers;
+}
+function parseJsonBody(raw) {
+    const trimmed = raw.trim();
+    if (!trimmed)
+        return {};
+    try {
+        const parsed = JSON.parse(trimmed);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+            return null;
+        return parsed;
+    }
+    catch {
+        return null;
+    }
+}
+async function resolveRequestBody(input, init) {
+    if (typeof init?.body === 'string') {
+        return parseJsonBody(init.body) || {};
+    }
+    if (input instanceof Request) {
+        try {
+            const text = await input.clone().text();
+            const parsed = parseJsonBody(text);
+            if (parsed)
+                return parsed;
+        }
+        catch {
+            // ignore body parse failures
+        }
+    }
+    return {};
+}
 function rewriteUrlForCodex(url) {
     return url.replace(URL_PATHS.RESPONSES, URL_PATHS.CODEX_RESPONSES);
 }
@@ -192,12 +238,29 @@ async function convertSseToJson(response, headers) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let fullText = '';
+    const jsonHeaders = new Headers(headers);
+    jsonHeaders.set('content-type', 'application/json; charset=utf-8');
     while (true) {
         const { done, value } = await reader.read();
         if (done)
             break;
         fullText += decoder.decode(value, { stream: true });
+        const finalResponse = parseSseStream(fullText);
+        if (finalResponse) {
+            try {
+                await reader.cancel();
+            }
+            catch {
+                // ignore
+            }
+            return new Response(JSON.stringify(finalResponse), {
+                status: response.status,
+                statusText: response.statusText,
+                headers: jsonHeaders
+            });
+        }
     }
+    fullText += decoder.decode();
     const finalResponse = parseSseStream(fullText);
     if (!finalResponse) {
         return new Response(fullText, {
@@ -206,8 +269,6 @@ async function convertSseToJson(response, headers) {
             headers
         });
     }
-    const jsonHeaders = new Headers(headers);
-    jsonHeaders.set('content-type', 'application/json; charset=utf-8');
     return new Response(JSON.stringify(finalResponse), {
         status: response.status,
         statusText: response.statusText,
@@ -538,24 +599,37 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                 const customFetch = async (input, init) => {
                     await syncAuthFromOpenCode(getAuth);
                     const originalUrl = extractRequestUrl(input);
-                    let body = {};
-                    try {
-                        body = init?.body ? JSON.parse(init.body) : {};
-                    }
-                    catch {
-                        body = {};
-                    }
-                    const authType = selectAuthTypeForRequest(body.model, originalUrl);
+                    const method = resolveRequestMethod(input, init);
+                    const body = await resolveRequestBody(input, init);
+                    const outgoingHeaders = resolveRequestHeaders(input, init);
                     const rawModel = extractModelName(body.model);
-                    let rotation = await getNextAccount(pluginConfig, { authType });
-                    if (!rotation && !rawModel && authType === 'api') {
-                        // Some OpenCode payloads encode model as structured objects.
-                        // If we cannot reliably infer model family, fall back to OAuth pool
-                        // before failing hard, so codex sessions continue to work.
-                        rotation = await getNextAccount(pluginConfig, { authType: 'oauth' });
+                    const authHint = await (async () => {
+                        try {
+                            const timeoutMs = 2500;
+                            const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs));
+                            const auth = await Promise.race([getAuth(), timeoutPromise]);
+                            if (auth && typeof auth === 'object' && 'type' in auth) {
+                                if (auth.type === 'oauth')
+                                    return 'oauth';
+                                if (auth.type === 'api')
+                                    return 'api';
+                            }
+                            return null;
+                        }
+                        catch {
+                            return null;
+                        }
+                    })();
+                    const selectedAuthType = rawModel
+                        ? selectAuthTypeForRequest(body.model, originalUrl)
+                        : (authHint ?? selectAuthTypeForRequest(body.model, originalUrl));
+                    let rotation = await getNextAccount(pluginConfig, { authType: selectedAuthType });
+                    if (!rotation && !rawModel) {
+                        const fallback = selectedAuthType === 'oauth' ? 'api' : 'oauth';
+                        rotation = await getNextAccount(pluginConfig, { authType: fallback });
                     }
                     if (!rotation) {
-                        const label = authType === 'api' ? 'API key' : 'OAuth';
+                        const label = selectedAuthType === 'api' ? 'API key' : 'OAuth';
                         return new Response(JSON.stringify({ error: { message: `No available ${label} accounts` } }), { status: 503, headers: { 'Content-Type': 'application/json' } });
                     }
                     const { account, credential, authType: resolvedAuthType } = rotation;
@@ -569,7 +643,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                     };
                     // Note: The ChatGPT Codex backend does not currently accept
                     // `truncation`. Keep this opt-in and default off.
-                    if (authType === 'oauth' && payload.truncation === undefined) {
+                    if (resolvedAuthType === 'oauth' && payload.truncation === undefined) {
                         const truncationRaw = (process.env.OPENCODE_MULTI_AUTH_TRUNCATION || '').trim();
                         if (truncationRaw && truncationRaw !== 'disabled' && truncationRaw !== 'false' && truncationRaw !== '0') {
                             payload.truncation = truncationRaw;
@@ -590,7 +664,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                         ? toCodexBackendUrl(originalUrl)
                         : originalUrl;
                     try {
-                        const headers = new Headers(init?.headers || {});
+                        const headers = new Headers(outgoingHeaders);
                         headers.delete('x-api-key');
                         headers.set('Content-Type', 'application/json');
                         headers.set('Authorization', `Bearer ${credential}`);
@@ -624,9 +698,9 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                                 headers.set('accept', 'application/json');
                             }
                         }
-                        const timeoutMsRaw = process.env.OPENCODE_MULTI_AUTH_REQUEST_TIMEOUT_MS || '120000';
+                        const timeoutMsRaw = process.env.OPENCODE_MULTI_AUTH_REQUEST_TIMEOUT_MS || '45000';
                         const timeoutMs = Number.parseInt(timeoutMsRaw, 10);
-                        const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 120000;
+                        const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 45000;
                         const controller = new AbortController();
                         const timer = setTimeout(() => controller.abort(), timeout);
                         if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
@@ -635,7 +709,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                         let res;
                         try {
                             res = await fetch(url, {
-                                method: init?.method || 'POST',
+                                method,
                                 headers,
                                 body: JSON.stringify(payload),
                                 signal: controller.signal
@@ -755,7 +829,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                         if (err instanceof Error && err.name === 'AbortError') {
                             return new Response(JSON.stringify({
                                 error: {
-                                    message: `[multi-auth][acc=${account.alias}] Request timed out after ${process.env.OPENCODE_MULTI_AUTH_REQUEST_TIMEOUT_MS || '120000'}ms`
+                                    message: `[multi-auth][acc=${account.alias}] Request timed out after ${process.env.OPENCODE_MULTI_AUTH_REQUEST_TIMEOUT_MS || '45000'}ms`
                                 }
                             }), { status: 504, headers: { 'Content-Type': 'application/json' } });
                         }

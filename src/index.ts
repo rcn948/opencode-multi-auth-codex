@@ -64,6 +64,54 @@ function extractRequestUrl(input: Request | string | URL): string {
   return input.url
 }
 
+function resolveRequestMethod(input: Request | string | URL, init?: RequestInit): string {
+  if (init?.method) return init.method
+  if (input instanceof Request && input.method) return input.method
+  return 'POST'
+}
+
+function resolveRequestHeaders(input: Request | string | URL, init?: RequestInit): Headers {
+  const headers = new Headers(input instanceof Request ? input.headers : undefined)
+  const override = new Headers(init?.headers || {})
+  for (const [key, value] of override.entries()) {
+    headers.set(key, value)
+  }
+  return headers
+}
+
+function parseJsonBody(raw: string): Record<string, any> | null {
+  const trimmed = raw.trim()
+  if (!trimmed) return {}
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    return parsed as Record<string, any>
+  } catch {
+    return null
+  }
+}
+
+async function resolveRequestBody(
+  input: Request | string | URL,
+  init?: RequestInit
+): Promise<Record<string, any>> {
+  if (typeof init?.body === 'string') {
+    return parseJsonBody(init.body) || {}
+  }
+
+  if (input instanceof Request) {
+    try {
+      const text = await input.clone().text()
+      const parsed = parseJsonBody(text)
+      if (parsed) return parsed
+    } catch {
+      // ignore body parse failures
+    }
+  }
+
+  return {}
+}
+
 function rewriteUrlForCodex(url: string): string {
   return url.replace(URL_PATHS.RESPONSES, URL_PATHS.CODEX_RESPONSES)
 }
@@ -210,12 +258,30 @@ async function convertSseToJson(response: Response, headers: Headers): Promise<R
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let fullText = ''
+  const jsonHeaders = new Headers(headers)
+  jsonHeaders.set('content-type', 'application/json; charset=utf-8')
 
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
     fullText += decoder.decode(value, { stream: true })
+
+    const finalResponse = parseSseStream(fullText)
+    if (finalResponse) {
+      try {
+        await reader.cancel()
+      } catch {
+        // ignore
+      }
+      return new Response(JSON.stringify(finalResponse), {
+        status: response.status,
+        statusText: response.statusText,
+        headers: jsonHeaders
+      })
+    }
   }
+
+  fullText += decoder.decode()
 
   const finalResponse = parseSseStream(fullText)
   if (!finalResponse) {
@@ -225,9 +291,6 @@ async function convertSseToJson(response: Response, headers: Headers): Promise<R
       headers
     })
   }
-
-  const jsonHeaders = new Headers(headers)
-  jsonHeaders.set('content-type', 'application/json; charset=utf-8')
 
   return new Response(JSON.stringify(finalResponse), {
     status: response.status,
@@ -596,26 +659,39 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
           await syncAuthFromOpenCode(getAuth)
 
           const originalUrl = extractRequestUrl(input)
-          let body: Record<string, any> = {}
-          try {
-            body = init?.body ? JSON.parse(init.body as string) : {}
-          } catch {
-            body = {}
-          }
+          const method = resolveRequestMethod(input, init)
+          const body = await resolveRequestBody(input, init)
+          const outgoingHeaders = resolveRequestHeaders(input, init)
 
-          const authType = selectAuthTypeForRequest(body.model, originalUrl)
           const rawModel = extractModelName(body.model)
-          let rotation = await getNextAccount(pluginConfig, { authType })
+          const authHint = await (async () => {
+            try {
+              const timeoutMs = 2500
+              const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs))
+              const auth = await Promise.race([getAuth(), timeoutPromise])
+              if (auth && typeof auth === 'object' && 'type' in auth) {
+                if (auth.type === 'oauth') return 'oauth' as const
+                if (auth.type === 'api') return 'api' as const
+              }
+              return null
+            } catch {
+              return null
+            }
+          })()
 
-          if (!rotation && !rawModel && authType === 'api') {
-            // Some OpenCode payloads encode model as structured objects.
-            // If we cannot reliably infer model family, fall back to OAuth pool
-            // before failing hard, so codex sessions continue to work.
-            rotation = await getNextAccount(pluginConfig, { authType: 'oauth' })
+          const selectedAuthType = rawModel
+            ? selectAuthTypeForRequest(body.model, originalUrl)
+            : (authHint ?? selectAuthTypeForRequest(body.model, originalUrl))
+
+          let rotation = await getNextAccount(pluginConfig, { authType: selectedAuthType })
+
+          if (!rotation && !rawModel) {
+            const fallback = selectedAuthType === 'oauth' ? 'api' : 'oauth'
+            rotation = await getNextAccount(pluginConfig, { authType: fallback })
           }
 
           if (!rotation) {
-            const label = authType === 'api' ? 'API key' : 'OAuth'
+            const label = selectedAuthType === 'api' ? 'API key' : 'OAuth'
             return new Response(
               JSON.stringify({ error: { message: `No available ${label} accounts` } }),
               { status: 503, headers: { 'Content-Type': 'application/json' } }
@@ -635,7 +711,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
 
           // Note: The ChatGPT Codex backend does not currently accept
           // `truncation`. Keep this opt-in and default off.
-          if (authType === 'oauth' && payload.truncation === undefined) {
+          if (resolvedAuthType === 'oauth' && payload.truncation === undefined) {
             const truncationRaw = (process.env.OPENCODE_MULTI_AUTH_TRUNCATION || '').trim()
             if (truncationRaw && truncationRaw !== 'disabled' && truncationRaw !== 'false' && truncationRaw !== '0') {
               payload.truncation = truncationRaw
@@ -661,7 +737,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
             : originalUrl
 
           try {
-            const headers = new Headers(init?.headers || {})
+            const headers = new Headers(outgoingHeaders)
             headers.delete('x-api-key')
             headers.set('Content-Type', 'application/json')
             headers.set('Authorization', `Bearer ${credential}`)
@@ -701,9 +777,9 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
               }
             }
 
-            const timeoutMsRaw = process.env.OPENCODE_MULTI_AUTH_REQUEST_TIMEOUT_MS || '120000'
+            const timeoutMsRaw = process.env.OPENCODE_MULTI_AUTH_REQUEST_TIMEOUT_MS || '45000'
             const timeoutMs = Number.parseInt(timeoutMsRaw, 10)
-            const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 120000
+            const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 45000
             const controller = new AbortController()
             const timer = setTimeout(() => controller.abort(), timeout)
 
@@ -716,7 +792,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
             let res: Response
             try {
               res = await fetch(url, {
-                method: init?.method || 'POST',
+                method,
                 headers,
                 body: JSON.stringify(payload),
                 signal: controller.signal
@@ -877,7 +953,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
               return new Response(
                 JSON.stringify({
                   error: {
-                    message: `[multi-auth][acc=${account.alias}] Request timed out after ${process.env.OPENCODE_MULTI_AUTH_REQUEST_TIMEOUT_MS || '120000'}ms`
+                    message: `[multi-auth][acc=${account.alias}] Request timed out after ${process.env.OPENCODE_MULTI_AUTH_REQUEST_TIMEOUT_MS || '45000'}ms`
                   }
                 }),
                 { status: 504, headers: { 'Content-Type': 'application/json' } }
