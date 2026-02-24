@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { selectAuthTypeForRequest, toCodexBackendUrl } from '../index.js';
+import { ensureCodexInstructions, selectAuthTypeForRequest, toCodexBackendUrl } from '../index.js';
 test('selectAuthTypeForRequest routes codex models to oauth', () => {
     assert.equal(selectAuthTypeForRequest('gpt-5.3-codex'), 'oauth');
     assert.equal(selectAuthTypeForRequest('openai/gpt-5.2-codex-high'), 'oauth');
@@ -26,5 +26,22 @@ test('toCodexBackendUrl always targets backend-api responses endpoint', () => {
     assert.equal(toCodexBackendUrl('https://api.openai.com/v1/responses'), 'https://chatgpt.com/backend-api/codex/responses');
     assert.equal(toCodexBackendUrl('https://api.openai.com/v1/chat/completions'), 'https://chatgpt.com/backend-api/codex/chat/completions');
     assert.equal(toCodexBackendUrl('https://chatgpt.com/backend-api/codex/responses?stream=true'), 'https://chatgpt.com/backend-api/codex/responses?stream=true');
+});
+test('ensureCodexInstructions extracts developer instructions from responses input', () => {
+    const payload = {
+        input: [
+            { role: 'developer', content: [{ type: 'input_text', text: 'Follow these rules.' }] },
+            { role: 'user', content: 'hi' }
+        ]
+    };
+    ensureCodexInstructions(payload);
+    assert.equal(payload.instructions, 'Follow these rules.');
+    assert.equal(payload.input.length, 1);
+    assert.equal(payload.input[0].role, 'user');
+});
+test('ensureCodexInstructions falls back to default when missing', () => {
+    const payload = { input: [{ role: 'user', content: 'hi' }] };
+    ensureCodexInstructions(payload);
+    assert.ok(typeof payload.instructions === 'string' && payload.instructions.length > 0);
 });
 //# sourceMappingURL=routing.test.js.map

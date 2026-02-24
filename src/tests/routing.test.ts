@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { selectAuthTypeForRequest, toCodexBackendUrl } from '../index.js'
+import { ensureCodexInstructions, selectAuthTypeForRequest, toCodexBackendUrl } from '../index.js'
 
 test('selectAuthTypeForRequest routes codex models to oauth', () => {
   assert.equal(selectAuthTypeForRequest('gpt-5.3-codex'), 'oauth')
@@ -41,4 +41,23 @@ test('toCodexBackendUrl always targets backend-api responses endpoint', () => {
     toCodexBackendUrl('https://chatgpt.com/backend-api/codex/responses?stream=true'),
     'https://chatgpt.com/backend-api/codex/responses?stream=true'
   )
+})
+
+test('ensureCodexInstructions extracts developer instructions from responses input', () => {
+  const payload: any = {
+    input: [
+      { role: 'developer', content: [{ type: 'input_text', text: 'Follow these rules.' }] },
+      { role: 'user', content: 'hi' }
+    ]
+  }
+  ensureCodexInstructions(payload)
+  assert.equal(payload.instructions, 'Follow these rules.')
+  assert.equal(payload.input.length, 1)
+  assert.equal(payload.input[0].role, 'user')
+})
+
+test('ensureCodexInstructions falls back to default when missing', () => {
+  const payload: any = { input: [{ role: 'user', content: 'hi' }] }
+  ensureCodexInstructions(payload)
+  assert.ok(typeof payload.instructions === 'string' && payload.instructions.length > 0)
 })

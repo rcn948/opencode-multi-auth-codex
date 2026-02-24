@@ -171,6 +171,85 @@ function filterInput(input: unknown): unknown {
     })
 }
 
+function contentToText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (!part) return ''
+        if (typeof part === 'string') return part
+        if (typeof part === 'object') {
+          const obj = part as Record<string, unknown>
+          if (typeof obj.text === 'string') return obj.text
+          if (typeof obj.content === 'string') return obj.content
+        }
+        return ''
+      })
+      .filter(Boolean)
+      .join('\n')
+  }
+  return ''
+}
+
+export function ensureCodexInstructions(payload: Record<string, any>): Record<string, any> {
+  const existing = typeof payload.instructions === 'string' ? payload.instructions.trim() : ''
+  if (existing) return payload
+
+  // Try extracting from Responses-style input items.
+  if (Array.isArray(payload.input)) {
+    const extracted: string[] = []
+    const remaining: any[] = []
+
+    for (const item of payload.input) {
+      const role = item?.role
+      if (role === 'system' || role === 'developer') {
+        const text = contentToText(item?.content)
+        if (text.trim()) extracted.push(text.trim())
+        continue
+      }
+      remaining.push(item)
+    }
+
+    if (extracted.length > 0) {
+      payload.instructions = extracted.join('\n\n')
+      payload.input = remaining
+      return payload
+    }
+  }
+
+  // Try extracting from Chat Completions-style messages.
+  if (Array.isArray(payload.messages)) {
+    const extracted: string[] = []
+    const input: any[] = []
+
+    for (const msg of payload.messages) {
+      const role = msg?.role
+      if (role === 'system' || role === 'developer') {
+        const text = contentToText(msg?.content)
+        if (text.trim()) extracted.push(text.trim())
+        continue
+      }
+      if (role === 'user' || role === 'assistant') {
+        input.push({ role, content: msg?.content })
+      }
+    }
+
+    if (input.length > 0 && !payload.input) {
+      payload.input = input
+    }
+    delete payload.messages
+
+    if (extracted.length > 0) {
+      payload.instructions = extracted.join('\n\n')
+      return payload
+    }
+  }
+
+  // Final fallback: Codex backend rejects missing instructions.
+  payload.instructions = 'You are a helpful coding assistant.'
+  return payload
+}
+
 function extractModelName(model: unknown): string | undefined {
   if (typeof model === 'string' && model.trim()) return model
   if (!model || typeof model !== 'object') return undefined
@@ -712,6 +791,10 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
             ...body,
             ...(normalizedModel ? { model: normalizedModel } : {}),
             store: false
+          }
+
+          if (resolvedAuthType === 'oauth') {
+            ensureCodexInstructions(payload)
           }
 
           // Note: The ChatGPT Codex backend does not currently accept

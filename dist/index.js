@@ -154,6 +154,83 @@ function filterInput(input) {
         return item;
     });
 }
+function contentToText(content) {
+    if (typeof content === 'string')
+        return content;
+    if (Array.isArray(content)) {
+        return content
+            .map((part) => {
+            if (!part)
+                return '';
+            if (typeof part === 'string')
+                return part;
+            if (typeof part === 'object') {
+                const obj = part;
+                if (typeof obj.text === 'string')
+                    return obj.text;
+                if (typeof obj.content === 'string')
+                    return obj.content;
+            }
+            return '';
+        })
+            .filter(Boolean)
+            .join('\n');
+    }
+    return '';
+}
+export function ensureCodexInstructions(payload) {
+    const existing = typeof payload.instructions === 'string' ? payload.instructions.trim() : '';
+    if (existing)
+        return payload;
+    // Try extracting from Responses-style input items.
+    if (Array.isArray(payload.input)) {
+        const extracted = [];
+        const remaining = [];
+        for (const item of payload.input) {
+            const role = item?.role;
+            if (role === 'system' || role === 'developer') {
+                const text = contentToText(item?.content);
+                if (text.trim())
+                    extracted.push(text.trim());
+                continue;
+            }
+            remaining.push(item);
+        }
+        if (extracted.length > 0) {
+            payload.instructions = extracted.join('\n\n');
+            payload.input = remaining;
+            return payload;
+        }
+    }
+    // Try extracting from Chat Completions-style messages.
+    if (Array.isArray(payload.messages)) {
+        const extracted = [];
+        const input = [];
+        for (const msg of payload.messages) {
+            const role = msg?.role;
+            if (role === 'system' || role === 'developer') {
+                const text = contentToText(msg?.content);
+                if (text.trim())
+                    extracted.push(text.trim());
+                continue;
+            }
+            if (role === 'user' || role === 'assistant') {
+                input.push({ role, content: msg?.content });
+            }
+        }
+        if (input.length > 0 && !payload.input) {
+            payload.input = input;
+        }
+        delete payload.messages;
+        if (extracted.length > 0) {
+            payload.instructions = extracted.join('\n\n');
+            return payload;
+        }
+    }
+    // Final fallback: Codex backend rejects missing instructions.
+    payload.instructions = 'You are a helpful coding assistant.';
+    return payload;
+}
 function extractModelName(model) {
     if (typeof model === 'string' && model.trim())
         return model;
@@ -645,6 +722,9 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                         ...(normalizedModel ? { model: normalizedModel } : {}),
                         store: false
                     };
+                    if (resolvedAuthType === 'oauth') {
+                        ensureCodexInstructions(payload);
+                    }
                     // Note: The ChatGPT Codex backend does not currently accept
                     // `truncation`. Keep this opt-in and default off.
                     if (resolvedAuthType === 'oauth' && payload.truncation === undefined) {

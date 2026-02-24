@@ -1,6 +1,7 @@
 import type { Plugin } from '@opencode-ai/plugin';
 import { type AccountAuthType } from './types.js';
 export declare function toCodexBackendUrl(originalUrl: string): string;
+export declare function ensureCodexInstructions(payload: Record<string, any>): Record<string, any>;
 export declare function selectAuthTypeForRequest(model: unknown, requestUrl?: string): AccountAuthType;
 /**
  * Multi-account OAuth plugin for OpenCode
