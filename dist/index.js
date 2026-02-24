@@ -231,6 +231,25 @@ export function ensureCodexInstructions(payload) {
     payload.instructions = 'You are a helpful coding assistant.';
     return payload;
 }
+export function ensureCodexPayloadCompatibility(payload) {
+    // The ChatGPT Codex backend is not a 1:1 clone of the OpenAI Responses API.
+    // Strip/translate known incompatible fields.
+    if (typeof payload.max_output_tokens === 'number') {
+        const value = payload.max_output_tokens;
+        delete payload.max_output_tokens;
+        if (payload.max_tokens === undefined) {
+            payload.max_tokens = value;
+        }
+    }
+    else if ('max_output_tokens' in payload) {
+        delete payload.max_output_tokens;
+    }
+    // These may appear in OpenAI Responses requests but are not always accepted by Codex.
+    // Keep the list conservative and expand only when we see concrete errors.
+    delete payload.service_tier;
+    delete payload.safety_identifier;
+    return payload;
+}
 function extractModelName(model) {
     if (typeof model === 'string' && model.trim())
         return model;
@@ -723,6 +742,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                         store: false
                     };
                     if (resolvedAuthType === 'oauth') {
+                        ensureCodexPayloadCompatibility(payload);
                         ensureCodexInstructions(payload);
                     }
                     // Note: The ChatGPT Codex backend does not currently accept
@@ -790,14 +810,33 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                         if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
                             console.log(`[multi-auth] request auth=${resolvedAuthType} alias=${account.alias} model=${rawModel || 'unknown'} url=${url}`);
                         }
-                        let res;
-                        try {
-                            res = await fetch(url, {
+                        const send = async (attempt) => {
+                            const res = await fetch(url, {
                                 method,
                                 headers,
                                 body: JSON.stringify(payload),
                                 signal: controller.signal
                             });
+                            if (resolvedAuthType === 'oauth' && res.status === 400 && attempt < 1) {
+                                const errData = await res.clone().json().catch(() => null);
+                                const detail = (typeof errData?.detail === 'string' && errData.detail) ||
+                                    (typeof errData?.error?.message === 'string' && errData.error.message) ||
+                                    '';
+                                const match = detail.match(/Unsupported parameter:\s*([A-Za-z0-9_]+)/);
+                                const key = match?.[1];
+                                if (key && Object.prototype.hasOwnProperty.call(payload, key)) {
+                                    delete payload[key];
+                                    if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
+                                        console.log(`[multi-auth] stripping unsupported codex param: ${key}`);
+                                    }
+                                    return send(attempt + 1);
+                                }
+                            }
+                            return res;
+                        };
+                        let res;
+                        try {
+                            res = await send(0);
                         }
                         finally {
                             clearTimeout(timer);

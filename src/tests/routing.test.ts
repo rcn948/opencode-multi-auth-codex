@@ -1,6 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { ensureCodexInstructions, selectAuthTypeForRequest, toCodexBackendUrl } from '../index.js'
+import {
+  ensureCodexInstructions,
+  ensureCodexPayloadCompatibility,
+  selectAuthTypeForRequest,
+  toCodexBackendUrl
+} from '../index.js'
 
 test('selectAuthTypeForRequest routes codex models to oauth', () => {
   assert.equal(selectAuthTypeForRequest('gpt-5.3-codex'), 'oauth')
@@ -60,4 +65,11 @@ test('ensureCodexInstructions falls back to default when missing', () => {
   const payload: any = { input: [{ role: 'user', content: 'hi' }] }
   ensureCodexInstructions(payload)
   assert.ok(typeof payload.instructions === 'string' && payload.instructions.length > 0)
+})
+
+test('ensureCodexPayloadCompatibility strips max_output_tokens and maps to max_tokens', () => {
+  const payload: any = { max_output_tokens: 123 }
+  ensureCodexPayloadCompatibility(payload)
+  assert.equal(payload.max_output_tokens, undefined)
+  assert.equal(payload.max_tokens, 123)
 })
