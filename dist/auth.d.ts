@@ -1,3 +1,4 @@
+import { loadStore } from './store.js';
 import { type AccountCredentials } from './types.js';
 interface AuthorizationFlow {
     pkce: {
@@ -13,6 +14,12 @@ interface DeviceAuthorizationFlow {
     deviceAuthId: string;
     intervalMs: number;
 }
+export declare function findExistingOauthAlias(store: ReturnType<typeof loadStore>, identity: {
+    accountId?: string;
+    refreshToken?: string;
+    accessToken?: string;
+    email?: string;
+}): string | null;
 export declare function createHeadlessAuthorizationFlow(): Promise<DeviceAuthorizationFlow>;
 export declare function loginAccountHeadless(alias: string, flow: DeviceAuthorizationFlow): Promise<AccountCredentials>;
 export declare function createAuthorizationFlow(): Promise<AuthorizationFlow>;

@@ -58,6 +58,46 @@ interface DeviceAuthorizationFlow {
   intervalMs: number
 }
 
+export function findExistingOauthAlias(
+  store: ReturnType<typeof loadStore>,
+  identity: {
+    accountId?: string
+    refreshToken?: string
+    accessToken?: string
+    email?: string
+  }
+): string | null {
+  for (const account of Object.values(store.accounts)) {
+    if (!isOauthAccount(account)) continue
+    if (identity.accountId && account.accountId && account.accountId === identity.accountId) {
+      return account.alias
+    }
+  }
+
+  for (const account of Object.values(store.accounts)) {
+    if (!isOauthAccount(account)) continue
+    if (identity.refreshToken && account.refreshToken === identity.refreshToken) {
+      return account.alias
+    }
+  }
+
+  for (const account of Object.values(store.accounts)) {
+    if (!isOauthAccount(account)) continue
+    if (identity.accessToken && account.accessToken === identity.accessToken) {
+      return account.alias
+    }
+  }
+
+  for (const account of Object.values(store.accounts)) {
+    if (!isOauthAccount(account)) continue
+    if (identity.email && account.email && account.email === identity.email) {
+      return account.alias
+    }
+  }
+
+  return null
+}
+
 async function persistOauthAccount(alias: string, tokens: TokenResponse): Promise<AccountCredentials> {
   if (!tokens.refresh_token) {
     throw new Error('Token exchange did not return a refresh_token')
@@ -85,7 +125,36 @@ async function persistOauthAccount(alias: string, tokens: TokenResponse): Promis
     getAccountIdFromClaims(idClaims) ||
     getAccountIdFromClaims(accessClaims)
 
-  const store = addAccount(alias, {
+  const store = loadStore()
+  const existingAlias = findExistingOauthAlias(store, {
+    accountId,
+    refreshToken: tokens.refresh_token,
+    accessToken: tokens.access_token,
+    email
+  })
+
+  const targetAlias = existingAlias || alias
+
+  if (existingAlias) {
+    const updatedStore = updateAccount(existingAlias, {
+      authType: 'oauth',
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token,
+      idToken: tokens.id_token,
+      accountId,
+      expiresAt,
+      email,
+      lastRefresh: new Date(now).toISOString(),
+      lastSeenAt: now,
+      source: 'opencode',
+      authInvalid: false,
+      authInvalidatedAt: undefined
+    })
+
+    return updatedStore.accounts[existingAlias]
+  }
+
+  const createdStore = addAccount(targetAlias, {
     authType: 'oauth',
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token,
@@ -100,7 +169,7 @@ async function persistOauthAccount(alias: string, tokens: TokenResponse): Promis
     authInvalidatedAt: undefined
   })
 
-  return store.accounts[alias]
+  return createdStore.accounts[targetAlias]
 }
 
 export async function createHeadlessAuthorizationFlow(): Promise<DeviceAuthorizationFlow> {

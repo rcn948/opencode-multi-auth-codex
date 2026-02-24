@@ -19,6 +19,37 @@ const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/auth/callback`;
 const SCOPES = ['openid', 'profile', 'email', 'offline_access'];
 const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 const OAUTH_POLLING_SAFETY_MARGIN_MS = 500;
+export function findExistingOauthAlias(store, identity) {
+    for (const account of Object.values(store.accounts)) {
+        if (!isOauthAccount(account))
+            continue;
+        if (identity.accountId && account.accountId && account.accountId === identity.accountId) {
+            return account.alias;
+        }
+    }
+    for (const account of Object.values(store.accounts)) {
+        if (!isOauthAccount(account))
+            continue;
+        if (identity.refreshToken && account.refreshToken === identity.refreshToken) {
+            return account.alias;
+        }
+    }
+    for (const account of Object.values(store.accounts)) {
+        if (!isOauthAccount(account))
+            continue;
+        if (identity.accessToken && account.accessToken === identity.accessToken) {
+            return account.alias;
+        }
+    }
+    for (const account of Object.values(store.accounts)) {
+        if (!isOauthAccount(account))
+            continue;
+        if (identity.email && account.email && account.email === identity.email) {
+            return account.alias;
+        }
+    }
+    return null;
+}
 async function persistOauthAccount(alias, tokens) {
     if (!tokens.refresh_token) {
         throw new Error('Token exchange did not return a refresh_token');
@@ -42,7 +73,32 @@ async function persistOauthAccount(alias, tokens) {
     }
     const accountId = getAccountIdFromClaims(idClaims) ||
         getAccountIdFromClaims(accessClaims);
-    const store = addAccount(alias, {
+    const store = loadStore();
+    const existingAlias = findExistingOauthAlias(store, {
+        accountId,
+        refreshToken: tokens.refresh_token,
+        accessToken: tokens.access_token,
+        email
+    });
+    const targetAlias = existingAlias || alias;
+    if (existingAlias) {
+        const updatedStore = updateAccount(existingAlias, {
+            authType: 'oauth',
+            accessToken: tokens.access_token,
+            refreshToken: tokens.refresh_token,
+            idToken: tokens.id_token,
+            accountId,
+            expiresAt,
+            email,
+            lastRefresh: new Date(now).toISOString(),
+            lastSeenAt: now,
+            source: 'opencode',
+            authInvalid: false,
+            authInvalidatedAt: undefined
+        });
+        return updatedStore.accounts[existingAlias];
+    }
+    const createdStore = addAccount(targetAlias, {
         authType: 'oauth',
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token,
@@ -56,7 +112,7 @@ async function persistOauthAccount(alias, tokens) {
         authInvalid: false,
         authInvalidatedAt: undefined
     });
-    return store.accounts[alias];
+    return createdStore.accounts[targetAlias];
 }
 export async function createHeadlessAuthorizationFlow() {
     const response = await fetch(DEVICE_USER_CODE_URL, {
