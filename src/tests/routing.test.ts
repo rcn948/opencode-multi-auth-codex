@@ -7,7 +7,7 @@ import {
   rewriteOpenAIModelsForRouting,
   selectAuthTypeForRequest,
   toCodexBackendUrl
-} from '../index.js'
+} from '../routing.js'
 
 test('selectAuthTypeForRequest routes codex models to oauth', () => {
   assert.equal(selectAuthTypeForRequest('gpt-5.3-codex'), 'oauth')

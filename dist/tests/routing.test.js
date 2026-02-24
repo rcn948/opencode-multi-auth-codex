@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extractForcedAuthType, ensureCodexInstructions, ensureCodexPayloadCompatibility, rewriteOpenAIModelsForRouting, selectAuthTypeForRequest, toCodexBackendUrl } from '../index.js';
+import { extractForcedAuthType, ensureCodexInstructions, ensureCodexPayloadCompatibility, rewriteOpenAIModelsForRouting, selectAuthTypeForRequest, toCodexBackendUrl } from '../routing.js';
 test('selectAuthTypeForRequest routes codex models to oauth', () => {
     assert.equal(selectAuthTypeForRequest('gpt-5.3-codex'), 'oauth');
     assert.equal(selectAuthTypeForRequest('openai/gpt-5.2-codex-high'), 'oauth');
