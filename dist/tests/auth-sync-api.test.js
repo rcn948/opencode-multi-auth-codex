@@ -58,4 +58,18 @@ test('syncAuthFromOpenCode imports and deduplicates API keys', async () => {
         temp.cleanup();
     }
 });
+test('syncAuthFromOpenCode does not cooldown after empty auth', async () => {
+    const temp = setupTempStore();
+    try {
+        __resetAuthSyncStateForTests();
+        await syncAuthFromOpenCode(async () => null);
+        await syncAuthFromOpenCode(async () => ({ type: 'api', key: 'sk-after-empty' }));
+        const store = loadStore();
+        assert.equal(Object.keys(store.accounts).length, 1);
+        assert.equal(Object.values(store.accounts)[0].authType, 'api');
+    }
+    finally {
+        temp.cleanup();
+    }
+});
 //# sourceMappingURL=auth-sync-api.test.js.map

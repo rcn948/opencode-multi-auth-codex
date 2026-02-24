@@ -87,7 +87,6 @@ export async function syncAuthFromOpenCode(getAuth) {
     const now = Date.now();
     if (now - lastSyncAt < AUTH_SYNC_COOLDOWN_MS)
         return;
-    lastSyncAt = now;
     let auth = null;
     try {
         auth = await getAuth();
@@ -97,6 +96,7 @@ export async function syncAuthFromOpenCode(getAuth) {
     }
     if (!auth)
         return;
+    lastSyncAt = now;
     if (auth.type === 'oauth') {
         if (!auth.access)
             return;

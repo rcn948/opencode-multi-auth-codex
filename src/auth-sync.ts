@@ -90,7 +90,6 @@ export function __resetAuthSyncStateForTests(): void {
 export async function syncAuthFromOpenCode(getAuth: () => Promise<Auth>): Promise<void> {
   const now = Date.now()
   if (now - lastSyncAt < AUTH_SYNC_COOLDOWN_MS) return
-  lastSyncAt = now
 
   let auth: Auth | null = null
   try {
@@ -100,6 +99,7 @@ export async function syncAuthFromOpenCode(getAuth: () => Promise<Auth>): Promis
   }
 
   if (!auth) return
+  lastSyncAt = now
 
   if (auth.type === 'oauth') {
     if (!auth.access) return

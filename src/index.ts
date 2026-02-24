@@ -124,8 +124,18 @@ function extractModelName(model: unknown): string | undefined {
 
   const candidate = model as Record<string, unknown>
   if (typeof candidate.id === 'string' && candidate.id.trim()) return candidate.id
+  if (typeof candidate.modelID === 'string' && candidate.modelID.trim()) return candidate.modelID
   if (typeof candidate.model === 'string' && candidate.model.trim()) return candidate.model
   if (typeof candidate.name === 'string' && candidate.name.trim()) return candidate.name
+
+  if (candidate.model && typeof candidate.model === 'object') {
+    const nested = candidate.model as Record<string, unknown>
+    if (typeof nested.id === 'string' && nested.id.trim()) return nested.id
+    if (typeof nested.modelID === 'string' && nested.modelID.trim()) return nested.modelID
+    if (typeof nested.model === 'string' && nested.model.trim()) return nested.model
+    if (typeof nested.name === 'string' && nested.name.trim()) return nested.name
+  }
+
   return undefined
 }
 
@@ -594,7 +604,15 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
           }
 
           const authType = selectAuthTypeForRequest(body.model, originalUrl)
-          const rotation = await getNextAccount(pluginConfig, { authType })
+          const rawModel = extractModelName(body.model)
+          let rotation = await getNextAccount(pluginConfig, { authType })
+
+          if (!rotation && !rawModel && authType === 'api') {
+            // Some OpenCode payloads encode model as structured objects.
+            // If we cannot reliably infer model family, fall back to OAuth pool
+            // before failing hard, so codex sessions continue to work.
+            rotation = await getNextAccount(pluginConfig, { authType: 'oauth' })
+          }
 
           if (!rotation) {
             const label = authType === 'api' ? 'API key' : 'OAuth'
@@ -604,10 +622,9 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
             )
           }
 
-          const { account, credential } = rotation
+          const { account, credential, authType: resolvedAuthType } = rotation
           const isStreaming = body?.stream === true
           const normalizedModel = normalizeModel(body.model)
-          const rawModel = extractModelName(body.model)
           const reasoningMatch = rawModel?.match(/-(none|low|medium|high|xhigh)$/)
 
           const payload: Record<string, any> = {
@@ -639,7 +656,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
 
           delete payload.reasoning_effort
 
-          const url = authType === 'oauth'
+          const url = resolvedAuthType === 'oauth'
             ? toCodexBackendUrl(originalUrl)
             : originalUrl
 
@@ -649,7 +666,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
             headers.set('Content-Type', 'application/json')
             headers.set('Authorization', `Bearer ${credential}`)
 
-            if (authType === 'oauth') {
+            if (resolvedAuthType === 'oauth') {
               const decoded = decodeJWT(credential)
               const accountId = decoded?.[JWT_CLAIM_PATH]?.chatgpt_account_id
               if (!accountId) {
@@ -684,11 +701,35 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
               }
             }
 
-            const res = await fetch(url, {
-              method: init?.method || 'POST',
-              headers,
-              body: JSON.stringify(payload)
-            })
+            const timeoutMsRaw = process.env.OPENCODE_MULTI_AUTH_REQUEST_TIMEOUT_MS || '120000'
+            const timeoutMs = Number.parseInt(timeoutMsRaw, 10)
+            const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 120000
+            const controller = new AbortController()
+            const timer = setTimeout(() => controller.abort(), timeout)
+
+            if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
+              console.log(
+                `[multi-auth] request auth=${resolvedAuthType} alias=${account.alias} model=${rawModel || 'unknown'} url=${url}`
+              )
+            }
+
+            let res: Response
+            try {
+              res = await fetch(url, {
+                method: init?.method || 'POST',
+                headers,
+                body: JSON.stringify(payload),
+                signal: controller.signal
+              })
+            } finally {
+              clearTimeout(timer)
+            }
+
+            if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
+              console.log(
+                `[multi-auth] response auth=${resolvedAuthType} alias=${account.alias} status=${res.status}`
+              )
+            }
 
             const limitUpdate = extractRateLimitUpdate(res.headers)
             if (limitUpdate) {
@@ -701,11 +742,11 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
               const errorData = await res.clone().json().catch(() => ({})) as { error?: { message?: string } }
               const message = errorData?.error?.message || ''
 
-              if (authType === 'api' || message.toLowerCase().includes('invalidated') || res.status === 401) {
+              if (resolvedAuthType === 'api' || message.toLowerCase().includes('invalidated') || res.status === 401) {
                 markAuthInvalid(account.alias)
               }
 
-              const retryRotation = await getNextAccount(pluginConfig, { authType })
+              const retryRotation = await getNextAccount(pluginConfig, { authType: resolvedAuthType })
               if (retryRotation && retryRotation.account.alias !== account.alias) {
                 return customFetch(input, init)
               }
@@ -713,7 +754,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
               return new Response(
                 JSON.stringify({
                   error: {
-                    message: `[multi-auth][acc=${account.alias}] Unauthorized on all ${authType} accounts. ${message}`.trim()
+                    message: `[multi-auth][acc=${account.alias}] Unauthorized on all ${resolvedAuthType} accounts. ${message}`.trim()
                   }
                 }),
                 { status: res.status, headers: { 'Content-Type': 'application/json' } }
@@ -723,7 +764,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
             if (res.status === 429) {
               markRateLimited(account.alias, pluginConfig.rateLimitCooldownMs)
 
-              const retryRotation = await getNextAccount(pluginConfig, { authType })
+              const retryRotation = await getNextAccount(pluginConfig, { authType: resolvedAuthType })
               if (retryRotation && retryRotation.account.alias !== account.alias) {
                 return customFetch(input, init)
               }
@@ -732,14 +773,14 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
               return new Response(
                 JSON.stringify({
                   error: {
-                    message: `[multi-auth][acc=${account.alias}] Rate limited on all ${authType} accounts. ${errorData.error?.message || ''}`
+                    message: `[multi-auth][acc=${account.alias}] Rate limited on all ${resolvedAuthType} accounts. ${errorData.error?.message || ''}`
                   }
                 }),
                 { status: 429, headers: { 'Content-Type': 'application/json' } }
               )
             }
 
-            if (authType === 'oauth' && res.status === 402) {
+            if (resolvedAuthType === 'oauth' && res.status === 402) {
               // Some accounts can temporarily be in a deactivated workspace state.
               // Rotate to the next account instead of hard-failing the request.
               const errorData = await res.clone().json().catch(() => null) as any
@@ -783,7 +824,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
               }
             }
 
-            if (authType === 'oauth' && res.status === 400) {
+            if (resolvedAuthType === 'oauth' && res.status === 400) {
               // Some accounts get staged access to newer Codex models (e.g. gpt-5.3-codex).
               // If the backend says the model isn't supported for this account, temporarily
               // skip it instead of trapping the whole rotation on a permanent 400 loop.
@@ -832,6 +873,16 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
 
             return res
           } catch (err) {
+            if (err instanceof Error && err.name === 'AbortError') {
+              return new Response(
+                JSON.stringify({
+                  error: {
+                    message: `[multi-auth][acc=${account.alias}] Request timed out after ${process.env.OPENCODE_MULTI_AUTH_REQUEST_TIMEOUT_MS || '120000'}ms`
+                  }
+                }),
+                { status: 504, headers: { 'Content-Type': 'application/json' } }
+              )
+            }
             return new Response(
               JSON.stringify({ error: { message: `[multi-auth] Request failed: ${err}` } }),
               { status: 500, headers: { 'Content-Type': 'application/json' } }
@@ -849,7 +900,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
 
       methods: [
         {
-          label: 'ChatGPT OAuth (Headless, Multi-Auth Recommended)',
+          label: 'ChatGPT OAuth (Headless, Multi-Auth)',
           type: 'oauth' as const,
 
           prompts: [
@@ -891,7 +942,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
           }
         },
         {
-          label: 'ChatGPT OAuth (Browser Callback)',
+          label: 'ChatGPT OAuth (Browser Callback, Fallback)',
           type: 'oauth' as const,
 
           prompts: [
@@ -933,7 +984,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
           }
         },
         {
-          label: 'OpenAI API Key (Auto-import into Multi-Auth)',
+          label: 'OpenAI API Key (Multi-Auth)',
           type: 'api' as const
         }
       ]

@@ -12,6 +12,8 @@ test('selectAuthTypeForRequest routes non-codex models to api', () => {
 test('selectAuthTypeForRequest handles object model payloads', () => {
     assert.equal(selectAuthTypeForRequest({ model: 'gpt-5.3-codex' }), 'oauth');
     assert.equal(selectAuthTypeForRequest({ id: 'gpt-5.2' }), 'api');
+    assert.equal(selectAuthTypeForRequest({ modelID: 'gpt-5.3-codex' }), 'oauth');
+    assert.equal(selectAuthTypeForRequest({ model: { modelID: 'gpt-5.3-codex' } }), 'oauth');
 });
 test('selectAuthTypeForRequest handles unexpected model shapes', () => {
     assert.equal(selectAuthTypeForRequest({}), 'api');
