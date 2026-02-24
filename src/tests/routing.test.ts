@@ -1,8 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  extractForcedAuthType,
   ensureCodexInstructions,
   ensureCodexPayloadCompatibility,
+  rewriteOpenAIModelsForRouting,
   selectAuthTypeForRequest,
   toCodexBackendUrl
 } from '../index.js'
@@ -72,4 +74,34 @@ test('ensureCodexPayloadCompatibility strips max_output_tokens and maps to max_t
   ensureCodexPayloadCompatibility(payload)
   assert.equal(payload.max_output_tokens, undefined)
   assert.equal(payload.max_tokens, 123)
+})
+
+test('extractForcedAuthType reads explicit route hints', () => {
+  assert.equal(extractForcedAuthType({ opencodeMultiAuthRoute: 'oauth' }), 'oauth')
+  assert.equal(extractForcedAuthType({ opencode_multi_auth_route: 'api' }), 'api')
+  assert.equal(extractForcedAuthType({ opencodeMultiAuthRoute: 'invalid' }), null)
+})
+
+test('rewriteOpenAIModelsForRouting creates API and OAuth aliases for dual models', () => {
+  const rewritten = rewriteOpenAIModelsForRouting({
+    'gpt-5.2': {
+      id: 'gpt-5.2',
+      name: 'GPT 5.2 (OAuth)',
+      options: { textVerbosity: 'medium' }
+    },
+    'gpt-5.2-codex': {
+      id: 'gpt-5.2-codex',
+      name: 'GPT 5.2 Codex'
+    }
+  })
+
+  assert.ok(rewritten['gpt-5.2-api'])
+  assert.ok(rewritten['gpt-5.2-oauth'])
+  assert.equal(rewritten['gpt-5.2-api'].name, 'GPT 5.2 (API)')
+  assert.equal(rewritten['gpt-5.2-oauth'].name, 'GPT 5.2 (OAuth)')
+  assert.equal(rewritten['gpt-5.2-api'].id, 'gpt-5.2')
+  assert.equal(rewritten['gpt-5.2-oauth'].id, 'gpt-5.2')
+  assert.equal(rewritten['gpt-5.2-api'].options?.opencodeMultiAuthRoute, 'api')
+  assert.equal(rewritten['gpt-5.2-oauth'].options?.opencodeMultiAuthRoute, 'oauth')
+  assert.equal(rewritten['gpt-5.2-codex'].name, 'GPT 5.2 Codex (OAuth)')
 })

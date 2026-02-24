@@ -22,6 +22,7 @@ const PROVIDER_ID = 'openai'
 const CODEX_ORIGIN = 'https://chatgpt.com'
 const CODEX_BACKEND_PREFIX = '/backend-api'
 const OPENAI_API_BASE_URL = 'https://api.openai.com/v1'
+const ROUTE_HINT_OPTION = 'opencodeMultiAuthRoute'
 const REDIRECT_PORT = 1455
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/auth/callback`
 const URL_PATHS = {
@@ -42,6 +43,8 @@ const OPENAI_HEADER_VALUES = {
 const JWT_CLAIM_PATH = 'https://api.openai.com/auth'
 
 let pluginConfig: PluginConfig = { ...DEFAULT_CONFIG }
+
+type ProviderModelConfig = Record<string, any>
 
 function configure(config: Partial<PluginConfig>): void {
   pluginConfig = { ...pluginConfig, ...config }
@@ -329,6 +332,117 @@ export function selectAuthTypeForRequest(
   if (baseModel.includes('codex')) return 'oauth'
   if (requestUrl && requestUrl.includes('/codex/')) return 'oauth'
   return 'api'
+}
+
+function resolveRouteHint(value: unknown): AccountAuthType | null {
+  if (value === 'oauth' || value === 'api') return value
+  return null
+}
+
+export function extractForcedAuthType(payload: Record<string, any>): AccountAuthType | null {
+  return (
+    resolveRouteHint(payload?.[ROUTE_HINT_OPTION]) ||
+    resolveRouteHint(payload?.opencode_multi_auth_route) ||
+    resolveRouteHint(payload?._opencode_multi_auth_route)
+  )
+}
+
+function stripForcedAuthType(payload: Record<string, any>): void {
+  delete payload[ROUTE_HINT_OPTION]
+  delete payload.opencode_multi_auth_route
+  delete payload._opencode_multi_auth_route
+}
+
+function stripAuthLabel(name: string): string {
+  return name.replace(/\s*\((oauth|api)\)$/i, '').trim()
+}
+
+function dualRouteModelIDs(): Set<string> {
+  const raw = (process.env.OPENCODE_MULTI_AUTH_DUAL_ROUTE_MODELS || 'gpt-5,gpt-5.1,gpt-5.2').trim()
+  const ids = raw
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+  return new Set(ids)
+}
+
+function shouldDualRouteModel(apiID: string): boolean {
+  if (!apiID) return false
+  const id = apiID.toLowerCase()
+  if (id.includes('codex')) return false
+  if (id.includes('-chat-latest')) return false
+  return dualRouteModelIDs().has(id)
+}
+
+function providerModelID(key: string, model: ProviderModelConfig): string {
+  return typeof model.id === 'string' && model.id.trim() ? model.id : key
+}
+
+function withRouteOption(model: ProviderModelConfig, route: AccountAuthType): Record<string, any> {
+  const options = model.options && typeof model.options === 'object' ? model.options : {}
+  return {
+    ...options,
+    [ROUTE_HINT_OPTION]: route
+  }
+}
+
+function withLabeledRoute(
+  model: ProviderModelConfig,
+  apiID: string,
+  name: string,
+  route: AccountAuthType
+): ProviderModelConfig {
+  return {
+    ...model,
+    id: apiID,
+    name,
+    options: withRouteOption(model, route)
+  }
+}
+
+function addModel(
+  out: Record<string, ProviderModelConfig>,
+  key: string,
+  value: ProviderModelConfig
+): void {
+  if (!out[key]) {
+    out[key] = value
+    return
+  }
+  let index = 1
+  let candidate = `${key}-${index}`
+  while (out[candidate]) {
+    index += 1
+    candidate = `${key}-${index}`
+  }
+  out[candidate] = value
+}
+
+export function rewriteOpenAIModelsForRouting(
+  models: Record<string, ProviderModelConfig>
+): Record<string, ProviderModelConfig> {
+  const out: Record<string, ProviderModelConfig> = {}
+
+  for (const [key, rawModel] of Object.entries(models)) {
+    const model = rawModel && typeof rawModel === 'object' ? rawModel : {}
+    const apiID = providerModelID(key, model)
+    const cleanName = stripAuthLabel(typeof model.name === 'string' ? model.name : apiID)
+
+    if (apiID.toLowerCase().includes('codex')) {
+      addModel(out, key, withLabeledRoute(model, apiID, `${cleanName} (OAuth)`, 'oauth'))
+      continue
+    }
+
+    if (shouldDualRouteModel(apiID)) {
+      addModel(out, `${apiID}-api`, withLabeledRoute(model, apiID, `${cleanName} (API)`, 'api'))
+      addModel(out, `${apiID}-oauth`, withLabeledRoute(model, apiID, `${cleanName} (OAuth)`, 'oauth'))
+      continue
+    }
+
+    addModel(out, key, withLabeledRoute(model, apiID, `${cleanName} (API)`, 'api'))
+  }
+
+  return out
 }
 
 function ensureContentType(headers: Headers): Headers {
@@ -704,23 +818,34 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
       }
 	    },
 	    config: async (config) => {
-	      const injectModelsRaw = process.env.OPENCODE_MULTI_AUTH_INJECT_MODELS
-	      const injectModels = injectModelsRaw === '1' || injectModelsRaw === 'true'
-	      if (!injectModels) return
-
-	      const latestModel = (process.env.OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL || 'gpt-5.3-codex').trim()
 	      try {
 	        const openai = (config.provider?.[PROVIDER_ID] as any) || null
 	        if (!openai || typeof openai !== 'object') return
 	        openai.models ||= {}
 
+	        openai.models = rewriteOpenAIModelsForRouting(openai.models)
+
+	        const selected = (config as any)?.model
+	        if (typeof selected === 'string' && selected.startsWith('openai/')) {
+	          const selectedModel = selected.replace('openai/', '')
+	          if (openai.models[`${selectedModel}-api`]) {
+	            ;(config as any).model = `openai/${selectedModel}-api`
+	          }
+	        }
+
+	        const injectModelsRaw = process.env.OPENCODE_MULTI_AUTH_INJECT_MODELS
+	        const injectModels = injectModelsRaw === '1' || injectModelsRaw === 'true'
+	        if (!injectModels) return
+
+	        const latestModel = (process.env.OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL || 'gpt-5.3-codex').trim()
 	        if (!openai.models[latestModel]) {
 	          openai.models[latestModel] = {
 	            id: latestModel,
-	            name: 'GPT-5.3 Codex',
+	            name: 'GPT-5.3 Codex (OAuth)',
 	            reasoning: true,
 	            tool_call: true,
 	            temperature: true,
+	            options: { [ROUTE_HINT_OPTION]: 'oauth' },
 	            limit: {
 	              // Be conservative: upstream model metadata changes over time and
 	              // incorrect limits prevent OpenCode's compaction from triggering.
@@ -731,11 +856,11 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
 	        }
 
 	        if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
-	          console.log(`[multi-auth] injected ${latestModel} into runtime config`)
+	          console.log(`[multi-auth] configured route-labeled openai models`)
 	        }
 	      } catch (err) {
         if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
-          console.log('[multi-auth] config injection failed:', err)
+          console.log('[multi-auth] config routing rewrite failed:', err)
         }
       }
     },
@@ -768,6 +893,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
           const outgoingHeaders = resolveRequestHeaders(input, init)
 
           const rawModel = extractModelName(body.model)
+          const forcedAuthType = extractForcedAuthType(body)
           const authHint = await (async () => {
             try {
               const timeoutMs = 2500
@@ -783,9 +909,11 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
             }
           })()
 
-          const selectedAuthType = rawModel
-            ? selectAuthTypeForRequest(body.model, originalUrl)
-            : (authHint ?? selectAuthTypeForRequest(body.model, originalUrl))
+          const selectedAuthType = forcedAuthType || (
+            rawModel
+              ? selectAuthTypeForRequest(body.model, originalUrl)
+              : (authHint ?? selectAuthTypeForRequest(body.model, originalUrl))
+          )
 
           let rotation = await getNextAccount(pluginConfig, { authType: selectedAuthType })
 
@@ -812,6 +940,8 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
             ...(normalizedModel ? { model: normalizedModel } : {}),
             store: false
           }
+
+          stripForcedAuthType(payload)
 
           if (resolvedAuthType === 'oauth') {
             ensureCodexPayloadCompatibility(payload)

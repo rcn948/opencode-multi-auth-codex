@@ -9,6 +9,7 @@ const PROVIDER_ID = 'openai';
 const CODEX_ORIGIN = 'https://chatgpt.com';
 const CODEX_BACKEND_PREFIX = '/backend-api';
 const OPENAI_API_BASE_URL = 'https://api.openai.com/v1';
+const ROUTE_HINT_OPTION = 'opencodeMultiAuthRoute';
 const REDIRECT_PORT = 1455;
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/auth/callback`;
 const URL_PATHS = {
@@ -306,6 +307,92 @@ export function selectAuthTypeForRequest(model, requestUrl) {
     if (requestUrl && requestUrl.includes('/codex/'))
         return 'oauth';
     return 'api';
+}
+function resolveRouteHint(value) {
+    if (value === 'oauth' || value === 'api')
+        return value;
+    return null;
+}
+export function extractForcedAuthType(payload) {
+    return (resolveRouteHint(payload?.[ROUTE_HINT_OPTION]) ||
+        resolveRouteHint(payload?.opencode_multi_auth_route) ||
+        resolveRouteHint(payload?._opencode_multi_auth_route));
+}
+function stripForcedAuthType(payload) {
+    delete payload[ROUTE_HINT_OPTION];
+    delete payload.opencode_multi_auth_route;
+    delete payload._opencode_multi_auth_route;
+}
+function stripAuthLabel(name) {
+    return name.replace(/\s*\((oauth|api)\)$/i, '').trim();
+}
+function dualRouteModelIDs() {
+    const raw = (process.env.OPENCODE_MULTI_AUTH_DUAL_ROUTE_MODELS || 'gpt-5,gpt-5.1,gpt-5.2').trim();
+    const ids = raw
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean);
+    return new Set(ids);
+}
+function shouldDualRouteModel(apiID) {
+    if (!apiID)
+        return false;
+    const id = apiID.toLowerCase();
+    if (id.includes('codex'))
+        return false;
+    if (id.includes('-chat-latest'))
+        return false;
+    return dualRouteModelIDs().has(id);
+}
+function providerModelID(key, model) {
+    return typeof model.id === 'string' && model.id.trim() ? model.id : key;
+}
+function withRouteOption(model, route) {
+    const options = model.options && typeof model.options === 'object' ? model.options : {};
+    return {
+        ...options,
+        [ROUTE_HINT_OPTION]: route
+    };
+}
+function withLabeledRoute(model, apiID, name, route) {
+    return {
+        ...model,
+        id: apiID,
+        name,
+        options: withRouteOption(model, route)
+    };
+}
+function addModel(out, key, value) {
+    if (!out[key]) {
+        out[key] = value;
+        return;
+    }
+    let index = 1;
+    let candidate = `${key}-${index}`;
+    while (out[candidate]) {
+        index += 1;
+        candidate = `${key}-${index}`;
+    }
+    out[candidate] = value;
+}
+export function rewriteOpenAIModelsForRouting(models) {
+    const out = {};
+    for (const [key, rawModel] of Object.entries(models)) {
+        const model = rawModel && typeof rawModel === 'object' ? rawModel : {};
+        const apiID = providerModelID(key, model);
+        const cleanName = stripAuthLabel(typeof model.name === 'string' ? model.name : apiID);
+        if (apiID.toLowerCase().includes('codex')) {
+            addModel(out, key, withLabeledRoute(model, apiID, `${cleanName} (OAuth)`, 'oauth'));
+            continue;
+        }
+        if (shouldDualRouteModel(apiID)) {
+            addModel(out, `${apiID}-api`, withLabeledRoute(model, apiID, `${cleanName} (API)`, 'api'));
+            addModel(out, `${apiID}-oauth`, withLabeledRoute(model, apiID, `${cleanName} (OAuth)`, 'oauth'));
+            continue;
+        }
+        addModel(out, key, withLabeledRoute(model, apiID, `${cleanName} (API)`, 'api'));
+    }
+    return out;
 }
 function ensureContentType(headers) {
     const responseHeaders = new Headers(headers);
@@ -648,23 +735,33 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
             }
         },
         config: async (config) => {
-            const injectModelsRaw = process.env.OPENCODE_MULTI_AUTH_INJECT_MODELS;
-            const injectModels = injectModelsRaw === '1' || injectModelsRaw === 'true';
-            if (!injectModels)
-                return;
-            const latestModel = (process.env.OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL || 'gpt-5.3-codex').trim();
             try {
                 const openai = config.provider?.[PROVIDER_ID] || null;
                 if (!openai || typeof openai !== 'object')
                     return;
                 openai.models ||= {};
+                openai.models = rewriteOpenAIModelsForRouting(openai.models);
+                const selected = config?.model;
+                if (typeof selected === 'string' && selected.startsWith('openai/')) {
+                    const selectedModel = selected.replace('openai/', '');
+                    if (openai.models[`${selectedModel}-api`]) {
+                        ;
+                        config.model = `openai/${selectedModel}-api`;
+                    }
+                }
+                const injectModelsRaw = process.env.OPENCODE_MULTI_AUTH_INJECT_MODELS;
+                const injectModels = injectModelsRaw === '1' || injectModelsRaw === 'true';
+                if (!injectModels)
+                    return;
+                const latestModel = (process.env.OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL || 'gpt-5.3-codex').trim();
                 if (!openai.models[latestModel]) {
                     openai.models[latestModel] = {
                         id: latestModel,
-                        name: 'GPT-5.3 Codex',
+                        name: 'GPT-5.3 Codex (OAuth)',
                         reasoning: true,
                         tool_call: true,
                         temperature: true,
+                        options: { [ROUTE_HINT_OPTION]: 'oauth' },
                         limit: {
                             // Be conservative: upstream model metadata changes over time and
                             // incorrect limits prevent OpenCode's compaction from triggering.
@@ -674,12 +771,12 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                     };
                 }
                 if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
-                    console.log(`[multi-auth] injected ${latestModel} into runtime config`);
+                    console.log(`[multi-auth] configured route-labeled openai models`);
                 }
             }
             catch (err) {
                 if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
-                    console.log('[multi-auth] config injection failed:', err);
+                    console.log('[multi-auth] config routing rewrite failed:', err);
                 }
             }
         },
@@ -703,6 +800,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                     const body = await resolveRequestBody(input, init);
                     const outgoingHeaders = resolveRequestHeaders(input, init);
                     const rawModel = extractModelName(body.model);
+                    const forcedAuthType = extractForcedAuthType(body);
                     const authHint = await (async () => {
                         try {
                             const timeoutMs = 2500;
@@ -720,9 +818,9 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                             return null;
                         }
                     })();
-                    const selectedAuthType = rawModel
+                    const selectedAuthType = forcedAuthType || (rawModel
                         ? selectAuthTypeForRequest(body.model, originalUrl)
-                        : (authHint ?? selectAuthTypeForRequest(body.model, originalUrl));
+                        : (authHint ?? selectAuthTypeForRequest(body.model, originalUrl)));
                     let rotation = await getNextAccount(pluginConfig, { authType: selectedAuthType });
                     if (!rotation && !rawModel) {
                         const fallback = selectedAuthType === 'oauth' ? 'api' : 'oauth';
@@ -741,6 +839,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                         ...(normalizedModel ? { model: normalizedModel } : {}),
                         store: false
                     };
+                    stripForcedAuthType(payload);
                     if (resolvedAuthType === 'oauth') {
                         ensureCodexPayloadCompatibility(payload);
                         ensureCodexInstructions(payload);
