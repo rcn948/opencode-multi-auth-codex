@@ -1,7 +1,12 @@
 import type { Plugin, PluginInput } from '@opencode-ai/plugin'
 import fs from 'node:fs'
 import { syncAuthFromOpenCode } from './auth-sync.js'
-import { createAuthorizationFlow, loginAccount } from './auth.js'
+import {
+  createAuthorizationFlow,
+  createHeadlessAuthorizationFlow,
+  loginAccount,
+  loginAccountHeadless
+} from './auth.js'
 import { extractRateLimitUpdate, mergeRateLimits } from './rate-limits.js'
 import {
   getNextAccount,
@@ -844,7 +849,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
 
       methods: [
         {
-          label: 'ChatGPT OAuth (Multi-Account)',
+          label: 'ChatGPT OAuth (Headless, Multi-Auth Recommended)',
           type: 'oauth' as const,
 
           prompts: [
@@ -856,9 +861,48 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
             }
           ],
 
-          /**
-           * OAuth flow - opens browser for ChatGPT login
-           */
+          authorize: async (inputs?: Record<string, string>) => {
+            const alias = inputs?.alias || `account-${Date.now()}`
+            const flow = await createHeadlessAuthorizationFlow()
+
+            return {
+              url: flow.url,
+              method: 'auto' as const,
+              instructions: `Enter code: ${flow.userCode} for "${alias}"`,
+
+              callback: async () => {
+                try {
+                  const account = await loginAccountHeadless(alias, flow)
+                  if (!account.refreshToken || !account.accessToken || !account.expiresAt) {
+                    return { type: 'failed' as const }
+                  }
+                  return {
+                    type: 'success' as const,
+                    provider: PROVIDER_ID,
+                    refresh: account.refreshToken,
+                    access: account.accessToken,
+                    expires: account.expiresAt
+                  }
+                } catch {
+                  return { type: 'failed' as const }
+                }
+              }
+            }
+          }
+        },
+        {
+          label: 'ChatGPT OAuth (Browser Callback)',
+          type: 'oauth' as const,
+
+          prompts: [
+            {
+              type: 'text' as const,
+              key: 'alias',
+              message: 'Account alias (e.g., personal, work)',
+              placeholder: 'personal'
+            }
+          ],
+
           authorize: async (inputs?: Record<string, string>) => {
             const alias = inputs?.alias || `account-${Date.now()}`
             const flow = await createAuthorizationFlow()
@@ -889,7 +933,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
           }
         },
         {
-          label: 'Manually enter API Key (auto-import)',
+          label: 'OpenAI API Key (Auto-import into Multi-Auth)',
           type: 'api' as const
         }
       ]

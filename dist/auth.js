@@ -10,10 +10,109 @@ import { isOauthAccount } from './types.js';
 const OPENAI_ISSUER = 'https://auth.openai.com';
 const AUTHORIZE_URL = `${OPENAI_ISSUER}/oauth/authorize`;
 const TOKEN_URL = `${OPENAI_ISSUER}/oauth/token`;
+const DEVICE_USER_CODE_URL = `${OPENAI_ISSUER}/api/accounts/deviceauth/usercode`;
+const DEVICE_TOKEN_URL = `${OPENAI_ISSUER}/api/accounts/deviceauth/token`;
+const DEVICE_REDIRECT_URI = `${OPENAI_ISSUER}/deviceauth/callback`;
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const REDIRECT_PORT = 1455;
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/auth/callback`;
 const SCOPES = ['openid', 'profile', 'email', 'offline_access'];
+const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
+const OAUTH_POLLING_SAFETY_MARGIN_MS = 500;
+async function persistOauthAccount(alias, tokens) {
+    if (!tokens.refresh_token) {
+        throw new Error('Token exchange did not return a refresh_token');
+    }
+    const now = Date.now();
+    const accessClaims = decodeJwtPayload(tokens.access_token);
+    const idClaims = tokens.id_token ? decodeJwtPayload(tokens.id_token) : null;
+    const expiresAt = getExpiryFromClaims(accessClaims) || getExpiryFromClaims(idClaims) || now + tokens.expires_in * 1000;
+    let email = getEmailFromClaims(idClaims) || getEmailFromClaims(accessClaims);
+    try {
+        const userRes = await fetch(`${OPENAI_ISSUER}/userinfo`, {
+            headers: { Authorization: `Bearer ${tokens.access_token}` }
+        });
+        if (userRes.ok) {
+            const user = (await userRes.json());
+            email = user.email || email;
+        }
+    }
+    catch {
+        /* user info fetch is non-critical */
+    }
+    const accountId = getAccountIdFromClaims(idClaims) ||
+        getAccountIdFromClaims(accessClaims);
+    const store = addAccount(alias, {
+        authType: 'oauth',
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+        idToken: tokens.id_token,
+        accountId,
+        expiresAt,
+        email,
+        lastRefresh: new Date(now).toISOString(),
+        lastSeenAt: now,
+        source: 'opencode',
+        authInvalid: false,
+        authInvalidatedAt: undefined
+    });
+    return store.accounts[alias];
+}
+export async function createHeadlessAuthorizationFlow() {
+    const response = await fetch(DEVICE_USER_CODE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: CLIENT_ID })
+    });
+    if (!response.ok) {
+        throw new Error(`Failed to start headless authorization: ${response.status}`);
+    }
+    const data = (await response.json());
+    const intervalMs = Math.max(parseInt(data.interval, 10) || 5, 1) * 1000;
+    return {
+        url: `${OPENAI_ISSUER}/codex/device`,
+        userCode: data.user_code,
+        deviceAuthId: data.device_auth_id,
+        intervalMs
+    };
+}
+export async function loginAccountHeadless(alias, flow) {
+    const deadline = Date.now() + LOGIN_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+        const response = await fetch(DEVICE_TOKEN_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                device_auth_id: flow.deviceAuthId,
+                user_code: flow.userCode
+            })
+        });
+        if (response.ok) {
+            const pending = (await response.json());
+            const tokenRes = await fetch(TOKEN_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                    grant_type: 'authorization_code',
+                    code: pending.authorization_code,
+                    redirect_uri: DEVICE_REDIRECT_URI,
+                    client_id: CLIENT_ID,
+                    code_verifier: pending.code_verifier
+                }).toString()
+            });
+            if (!tokenRes.ok) {
+                throw new Error(`Token exchange failed: ${tokenRes.status}`);
+            }
+            const tokens = (await tokenRes.json());
+            return persistOauthAccount(alias, tokens);
+        }
+        if (response.status !== 403 && response.status !== 404) {
+            throw new Error(`Headless authorization failed: ${response.status}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, flow.intervalMs + OAUTH_POLLING_SAFETY_MARGIN_MS));
+    }
+    throw new Error('Headless login timeout - no callback received');
+}
 export async function createAuthorizationFlow() {
     const pkce = await generatePKCE();
     const state = randomBytes(16).toString('hex');
@@ -82,49 +181,13 @@ export async function loginAccount(alias, flow) {
                     throw new Error(`Token exchange failed: ${tokenRes.status}`);
                 }
                 const tokens = (await tokenRes.json());
-                if (!tokens.refresh_token) {
-                    throw new Error('Token exchange did not return a refresh_token');
-                }
-                const now = Date.now();
-                const accessClaims = decodeJwtPayload(tokens.access_token);
-                const idClaims = tokens.id_token ? decodeJwtPayload(tokens.id_token) : null;
-                const expiresAt = getExpiryFromClaims(accessClaims) || getExpiryFromClaims(idClaims) || now + tokens.expires_in * 1000;
-                let email = getEmailFromClaims(idClaims) || getEmailFromClaims(accessClaims);
-                try {
-                    const userRes = await fetch(`${OPENAI_ISSUER}/userinfo`, {
-                        headers: { Authorization: `Bearer ${tokens.access_token}` }
-                    });
-                    if (userRes.ok) {
-                        const user = (await userRes.json());
-                        email = user.email || email;
-                    }
-                }
-                catch {
-                    /* user info fetch is non-critical */
-                }
-                const accountId = getAccountIdFromClaims(idClaims) ||
-                    getAccountIdFromClaims(accessClaims);
-                const store = addAccount(alias, {
-                    authType: 'oauth',
-                    accessToken: tokens.access_token,
-                    refreshToken: tokens.refresh_token,
-                    idToken: tokens.id_token,
-                    accountId,
-                    expiresAt,
-                    email,
-                    lastRefresh: new Date(now).toISOString(),
-                    lastSeenAt: now,
-                    source: 'opencode',
-                    authInvalid: false,
-                    authInvalidatedAt: undefined
-                });
-                const account = store.accounts[alias];
+                const account = await persistOauthAccount(alias, tokens);
                 res.writeHead(200, { 'Content-Type': 'text/html' });
                 res.end(`
           <html>
             <body style="font-family: system-ui; padding: 40px; text-align: center;">
               <h1>Account "${alias}" authenticated!</h1>
-              <p>${email || 'Unknown email'}</p>
+              <p>${account.email || 'Unknown email'}</p>
               <p>You can close this window.</p>
             </body>
           </html>
@@ -157,7 +220,7 @@ export async function loginAccount(alias, flow) {
         setTimeout(() => {
             cleanup();
             reject(new Error('Login timeout - no callback received'));
-        }, 5 * 60 * 1000);
+        }, LOGIN_TIMEOUT_MS);
     });
 }
 export async function refreshToken(alias) {

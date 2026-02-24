@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { syncAuthFromOpenCode } from './auth-sync.js';
-import { createAuthorizationFlow, loginAccount } from './auth.js';
+import { createAuthorizationFlow, createHeadlessAuthorizationFlow, loginAccount, loginAccountHeadless } from './auth.js';
 import { extractRateLimitUpdate, mergeRateLimits } from './rate-limits.js';
 import { getNextAccount, markAuthInvalid, markModelUnsupported, markRateLimited, markWorkspaceDeactivated } from './rotation.js';
 import { listAccounts, updateAccount } from './store.js';
@@ -727,7 +727,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
             },
             methods: [
                 {
-                    label: 'ChatGPT OAuth (Multi-Account)',
+                    label: 'ChatGPT OAuth (Headless, Multi-Auth Recommended)',
                     type: 'oauth',
                     prompts: [
                         {
@@ -737,9 +737,45 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                             placeholder: 'personal'
                         }
                     ],
-                    /**
-                     * OAuth flow - opens browser for ChatGPT login
-                     */
+                    authorize: async (inputs) => {
+                        const alias = inputs?.alias || `account-${Date.now()}`;
+                        const flow = await createHeadlessAuthorizationFlow();
+                        return {
+                            url: flow.url,
+                            method: 'auto',
+                            instructions: `Enter code: ${flow.userCode} for "${alias}"`,
+                            callback: async () => {
+                                try {
+                                    const account = await loginAccountHeadless(alias, flow);
+                                    if (!account.refreshToken || !account.accessToken || !account.expiresAt) {
+                                        return { type: 'failed' };
+                                    }
+                                    return {
+                                        type: 'success',
+                                        provider: PROVIDER_ID,
+                                        refresh: account.refreshToken,
+                                        access: account.accessToken,
+                                        expires: account.expiresAt
+                                    };
+                                }
+                                catch {
+                                    return { type: 'failed' };
+                                }
+                            }
+                        };
+                    }
+                },
+                {
+                    label: 'ChatGPT OAuth (Browser Callback)',
+                    type: 'oauth',
+                    prompts: [
+                        {
+                            type: 'text',
+                            key: 'alias',
+                            message: 'Account alias (e.g., personal, work)',
+                            placeholder: 'personal'
+                        }
+                    ],
                     authorize: async (inputs) => {
                         const alias = inputs?.alias || `account-${Date.now()}`;
                         const flow = await createAuthorizationFlow();
@@ -769,7 +805,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                     }
                 },
                 {
-                    label: 'Manually enter API Key (auto-import)',
+                    label: 'OpenAI API Key (Auto-import into Multi-Auth)',
                     type: 'api'
                 }
             ]
