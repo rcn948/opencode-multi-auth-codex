@@ -1,5 +1,7 @@
 import type { Plugin, PluginInput } from '@opencode-ai/plugin'
 import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { syncAuthFromOpenCode } from './auth-sync.js'
 import {
   createAuthorizationFlow,
@@ -18,7 +20,6 @@ import {
 import { listAccounts, updateAccount } from './store.js'
 import { type AccountAuthType, DEFAULT_CONFIG, type PluginConfig } from './types.js'
 import {
-  ROUTE_HINT_OPTION,
   ensureCodexInstructions,
   ensureCodexPayloadCompatibility,
   extractForcedAuthType,
@@ -54,6 +55,43 @@ const JWT_CLAIM_PATH = 'https://api.openai.com/auth'
 let pluginConfig: PluginConfig = { ...DEFAULT_CONFIG }
 
 type ProviderModelConfig = Record<string, any>
+
+function opencodeModelsPath(): string {
+  const override = process.env.OPENCODE_MODELS_PATH
+  if (override && override.trim()) return override.trim()
+  return path.join(os.homedir(), '.local', 'share', 'opencode', 'models.json')
+}
+
+function loadCachedOpenAIModels(): Record<string, ProviderModelConfig> {
+  const file = opencodeModelsPath()
+  if (!fs.existsSync(file)) return {}
+
+  try {
+    const raw = fs.readFileSync(file, 'utf-8')
+    const parsed = JSON.parse(raw) as Record<string, any>
+    const openai = parsed?.openai
+    const models = openai?.models
+    if (!models || typeof models !== 'object') return {}
+    return models as Record<string, ProviderModelConfig>
+  } catch {
+    return {}
+  }
+}
+
+function buildRouteModelSeed(existing: Record<string, ProviderModelConfig>): Record<string, ProviderModelConfig> {
+  const seed: Record<string, ProviderModelConfig> = { ...existing }
+  const cached = loadCachedOpenAIModels()
+
+  for (const [modelID, model] of Object.entries(cached)) {
+    if (seed[modelID]) continue
+    seed[modelID] = {
+      id: modelID,
+      name: typeof model?.name === 'string' && model.name.trim() ? model.name : modelID
+    }
+  }
+
+  return seed
+}
 
 function configure(config: Partial<PluginConfig>): void {
   pluginConfig = { ...pluginConfig, ...config }
@@ -520,40 +558,43 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
 	        if (!openai || typeof openai !== 'object') return
 	        openai.models ||= {}
 
-	        openai.models = rewriteOpenAIModelsForRouting(openai.models)
-
-	        const selected = (config as any)?.model
-	        if (typeof selected === 'string' && selected.startsWith('openai/')) {
-	          const selectedModel = selected.replace('openai/', '')
-	          if (openai.models[`${selectedModel}-api`]) {
-	            ;(config as any).model = `openai/${selectedModel}-api`
-	          }
-	        }
+	        const seed = buildRouteModelSeed(openai.models)
 
 	        const injectModelsRaw = process.env.OPENCODE_MULTI_AUTH_INJECT_MODELS
 	        const injectModels = injectModelsRaw === '1' || injectModelsRaw === 'true'
-	        if (!injectModels) return
-
-	        const latestModel = (process.env.OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL || 'gpt-5.3-codex').trim()
-	        if (!openai.models[latestModel]) {
-	          openai.models[latestModel] = {
-	            id: latestModel,
-	            name: 'GPT-5.3 Codex (OAuth)',
-	            reasoning: true,
-	            tool_call: true,
-	            temperature: true,
-	            options: { [ROUTE_HINT_OPTION]: 'oauth' },
-	            limit: {
-	              // Be conservative: upstream model metadata changes over time and
-	              // incorrect limits prevent OpenCode's compaction from triggering.
-	              context: 200000,
-	              output: 8192
+	        if (injectModels) {
+	          const latestModel = (process.env.OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL || 'gpt-5.3-codex').trim()
+	          if (!seed[latestModel]) {
+	            seed[latestModel] = {
+	              id: latestModel,
+	              name: 'GPT-5.3 Codex',
+	              reasoning: true,
+	              tool_call: true,
+	              temperature: true,
+	              limit: {
+	                // Be conservative: upstream model metadata changes over time and
+	                // incorrect limits prevent OpenCode's compaction from triggering.
+	                context: 200000,
+	                output: 8192
+	              }
 	            }
 	          }
 	        }
 
+	        openai.models = rewriteOpenAIModelsForRouting(seed)
+
+	        const selected = (config as any)?.model
+	        if (typeof selected === 'string' && selected.startsWith('openai/')) {
+	          const selectedModel = selected.replace('openai/', '')
+	          const explicit = selectedModel.endsWith('-oauth') || selectedModel.endsWith('-api')
+	          if (!explicit && !openai.models[selectedModel] && openai.models[`${selectedModel}-api`]) {
+	            ;(config as any).model = `openai/${selectedModel}-api`
+	          }
+	        }
+
 	        if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
-	          console.log(`[multi-auth] configured route-labeled openai models`)
+	          const count = Object.keys(openai.models).length
+	          console.log(`[multi-auth] configured route-labeled openai models (${count})`)
 	        }
 	      } catch (err) {
         if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
