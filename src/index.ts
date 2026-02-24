@@ -11,10 +11,11 @@ import {
   markWorkspaceDeactivated
 } from './rotation.js'
 import { listAccounts, updateAccount } from './store.js'
-import { DEFAULT_CONFIG, type PluginConfig } from './types.js'
+import { type AccountAuthType, DEFAULT_CONFIG, type PluginConfig } from './types.js'
 
 const PROVIDER_ID = 'openai'
 const CODEX_BASE_URL = 'https://chatgpt.com/backend-api'
+const OPENAI_API_BASE_URL = 'https://api.openai.com/v1'
 const REDIRECT_PORT = 1455
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/auth/callback`
 const URL_PATHS = {
@@ -82,15 +83,20 @@ function extractPathAndSearch(url: string): string {
 
 function toCodexBackendUrl(originalUrl: string): string {
   const pathAndSearch = extractPathAndSearch(originalUrl)
+  const [pathname, search = ''] = pathAndSearch.split('?')
 
-  // Map OpenAI v1 endpoints to ChatGPT Codex endpoints.
-  let mapped = pathAndSearch
-  if (mapped.includes(URL_PATHS.RESPONSES)) {
-    mapped = mapped.replace(URL_PATHS.RESPONSES, URL_PATHS.CODEX_RESPONSES)
-  } else if (mapped.includes('/chat/completions')) {
-    mapped = mapped.replace('/chat/completions', '/codex/chat/completions')
+  let mappedPath = pathname
+  if (mappedPath === '/v1/responses') {
+    mappedPath = '/codex/responses'
+  } else if (mappedPath === '/responses') {
+    mappedPath = '/codex/responses'
+  } else if (mappedPath === '/v1/chat/completions') {
+    mappedPath = '/codex/chat/completions'
+  } else if (mappedPath === '/chat/completions') {
+    mappedPath = '/codex/chat/completions'
   }
 
+  const mapped = search ? `${mappedPath}?${search}` : mappedPath
   return new URL(mapped, CODEX_BASE_URL).toString()
 }
 
@@ -107,8 +113,8 @@ function filterInput(input: unknown): unknown {
     })
 }
 
-function normalizeModel(model: string | undefined): string {
-  if (!model) return 'gpt-5.1'
+function normalizeModel(model: string | undefined): string | undefined {
+  if (!model) return undefined
 
   const modelId = model.includes('/') ? model.split('/').pop()! : model
   const baseModel = modelId.replace(/-(?:none|low|medium|high|xhigh)$/, '')
@@ -132,6 +138,17 @@ function normalizeModel(model: string | undefined): string {
   }
 
   return baseModel
+}
+
+export function selectAuthTypeForRequest(
+  model: string | undefined,
+  requestUrl?: string
+): AccountAuthType {
+  const modelId = model?.includes('/') ? model.split('/').pop() : model
+  const baseModel = modelId?.replace(/-(?:none|low|medium|high|xhigh)$/, '') || ''
+  if (baseModel.includes('codex')) return 'oauth'
+  if (requestUrl && requestUrl.includes('/codex/')) return 'oauth'
+  return 'api'
 }
 
 function ensureContentType(headers: Headers): Headers {
@@ -549,28 +566,8 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
           init?: RequestInit
         ): Promise<Response> => {
           await syncAuthFromOpenCode(getAuth)
-          const rotation = await getNextAccount(pluginConfig)
-
-          if (!rotation) {
-            return new Response(
-              JSON.stringify({ error: { message: 'No available accounts' } }),
-              { status: 503, headers: { 'Content-Type': 'application/json' } }
-            )
-          }
-
-          const { account, token } = rotation
-          const decoded = decodeJWT(token)
-          const accountId = decoded?.[JWT_CLAIM_PATH]?.chatgpt_account_id
-          if (!accountId) {
-            return new Response(
-              JSON.stringify({ error: { message: '[multi-auth] Failed to extract accountId from token' } }),
-              { status: 401, headers: { 'Content-Type': 'application/json' } }
-            )
-          }
 
           const originalUrl = extractRequestUrl(input)
-          const url = toCodexBackendUrl(originalUrl)
-
           let body: Record<string, any> = {}
           try {
             body = init?.body ? JSON.parse(init.body as string) : {}
@@ -578,24 +575,36 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
             body = {}
           }
 
+          const authType = selectAuthTypeForRequest(body.model, originalUrl)
+          const rotation = await getNextAccount(pluginConfig, { authType })
+
+          if (!rotation) {
+            const label = authType === 'api' ? 'API key' : 'OAuth'
+            return new Response(
+              JSON.stringify({ error: { message: `No available ${label} accounts` } }),
+              { status: 503, headers: { 'Content-Type': 'application/json' } }
+            )
+          }
+
+          const { account, credential } = rotation
           const isStreaming = body?.stream === true
           const normalizedModel = normalizeModel(body.model)
           const reasoningMatch = body.model?.match(/-(none|low|medium|high|xhigh)$/)
 
-	          const payload: Record<string, any> = {
-	            ...body,
-	            model: normalizedModel,
-	            store: false
-	          }
+          const payload: Record<string, any> = {
+            ...body,
+            ...(normalizedModel ? { model: normalizedModel } : {}),
+            store: false
+          }
 
-	          // Note: The ChatGPT Codex backend does not currently accept
-	          // `truncation`. Keep this opt-in and default off.
-	          if (payload.truncation === undefined) {
-	            const truncationRaw = (process.env.OPENCODE_MULTI_AUTH_TRUNCATION || '').trim()
-	            if (truncationRaw && truncationRaw !== 'disabled' && truncationRaw !== 'false' && truncationRaw !== '0') {
-	              payload.truncation = truncationRaw
-	            }
-	          }
+          // Note: The ChatGPT Codex backend does not currently accept
+          // `truncation`. Keep this opt-in and default off.
+          if (authType === 'oauth' && payload.truncation === undefined) {
+            const truncationRaw = (process.env.OPENCODE_MULTI_AUTH_TRUNCATION || '').trim()
+            if (truncationRaw && truncationRaw !== 'disabled' && truncationRaw !== 'false' && truncationRaw !== '0') {
+              payload.truncation = truncationRaw
+            }
+          }
 
           if (payload.input) {
             payload.input = filterInput(payload.input)
@@ -611,25 +620,50 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
 
           delete payload.reasoning_effort
 
+          const url = authType === 'oauth'
+            ? toCodexBackendUrl(originalUrl)
+            : originalUrl
+
           try {
             const headers = new Headers(init?.headers || {})
             headers.delete('x-api-key')
             headers.set('Content-Type', 'application/json')
-            headers.set('Authorization', `Bearer ${token}`)
-            headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId)
-            headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES)
-            headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX)
+            headers.set('Authorization', `Bearer ${credential}`)
 
-            const cacheKey = payload?.prompt_cache_key
-            if (cacheKey) {
-              headers.set(OPENAI_HEADERS.CONVERSATION_ID, cacheKey)
-              headers.set(OPENAI_HEADERS.SESSION_ID, cacheKey)
+            if (authType === 'oauth') {
+              const decoded = decodeJWT(credential)
+              const accountId = decoded?.[JWT_CLAIM_PATH]?.chatgpt_account_id
+              if (!accountId) {
+                return new Response(
+                  JSON.stringify({ error: { message: '[multi-auth] Failed to extract accountId from token' } }),
+                  { status: 401, headers: { 'Content-Type': 'application/json' } }
+                )
+              }
+
+              headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId)
+              headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES)
+              headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX)
+
+              const cacheKey = payload?.prompt_cache_key
+              if (cacheKey) {
+                headers.set(OPENAI_HEADERS.CONVERSATION_ID, cacheKey)
+                headers.set(OPENAI_HEADERS.SESSION_ID, cacheKey)
+              } else {
+                headers.delete(OPENAI_HEADERS.CONVERSATION_ID)
+                headers.delete(OPENAI_HEADERS.SESSION_ID)
+              }
+
+              headers.set('accept', 'text/event-stream')
             } else {
+              headers.delete(OPENAI_HEADERS.ACCOUNT_ID)
+              headers.delete(OPENAI_HEADERS.BETA)
+              headers.delete(OPENAI_HEADERS.ORIGINATOR)
               headers.delete(OPENAI_HEADERS.CONVERSATION_ID)
               headers.delete(OPENAI_HEADERS.SESSION_ID)
+              if (!headers.has('accept')) {
+                headers.set('accept', 'application/json')
+              }
             }
-
-            headers.set('accept', 'text/event-stream')
 
             const res = await fetch(url, {
               method: init?.method || 'POST',
@@ -644,15 +678,15 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
               })
             }
 
-            // Handle rate limiting with automatic rotation
             if (res.status === 401 || res.status === 403) {
               const errorData = await res.clone().json().catch(() => ({})) as { error?: { message?: string } }
               const message = errorData?.error?.message || ''
-              if (message.toLowerCase().includes('invalidated') || res.status === 401) {
+
+              if (authType === 'api' || message.toLowerCase().includes('invalidated') || res.status === 401) {
                 markAuthInvalid(account.alias)
               }
 
-              const retryRotation = await getNextAccount(pluginConfig)
+              const retryRotation = await getNextAccount(pluginConfig, { authType })
               if (retryRotation && retryRotation.account.alias !== account.alias) {
                 return customFetch(input, init)
               }
@@ -660,7 +694,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
               return new Response(
                 JSON.stringify({
                   error: {
-                    message: `[multi-auth][acc=${account.alias}] Unauthorized on all accounts. ${message}`.trim()
+                    message: `[multi-auth][acc=${account.alias}] Unauthorized on all ${authType} accounts. ${message}`.trim()
                   }
                 }),
                 { status: res.status, headers: { 'Content-Type': 'application/json' } }
@@ -670,25 +704,23 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
             if (res.status === 429) {
               markRateLimited(account.alias, pluginConfig.rateLimitCooldownMs)
 
-              // Try another account
-              const retryRotation = await getNextAccount(pluginConfig)
+              const retryRotation = await getNextAccount(pluginConfig, { authType })
               if (retryRotation && retryRotation.account.alias !== account.alias) {
                 return customFetch(input, init)
               }
 
-              // All accounts exhausted
               const errorData = await res.json().catch(() => ({})) as { error?: { message?: string } }
               return new Response(
                 JSON.stringify({
                   error: {
-                    message: `[multi-auth][acc=${account.alias}] Rate limited on all accounts. ${errorData.error?.message || ''}`
+                    message: `[multi-auth][acc=${account.alias}] Rate limited on all ${authType} accounts. ${errorData.error?.message || ''}`
                   }
                 }),
                 { status: 429, headers: { 'Content-Type': 'application/json' } }
               )
             }
 
-            if (res.status === 402) {
+            if (authType === 'oauth' && res.status === 402) {
               // Some accounts can temporarily be in a deactivated workspace state.
               // Rotate to the next account instead of hard-failing the request.
               const errorData = await res.clone().json().catch(() => null) as any
@@ -716,7 +748,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
                   error: message || code
                 })
 
-                const retryRotation = await getNextAccount(pluginConfig)
+                const retryRotation = await getNextAccount(pluginConfig, { authType: 'oauth' })
                 if (retryRotation && retryRotation.account.alias !== account.alias) {
                   return customFetch(input, init)
                 }
@@ -732,7 +764,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
               }
             }
 
-            if (res.status === 400) {
+            if (authType === 'oauth' && res.status === 400) {
               // Some accounts get staged access to newer Codex models (e.g. gpt-5.3-codex).
               // If the backend says the model isn't supported for this account, temporarily
               // skip it instead of trapping the whole rotation on a permanent 400 loop.
@@ -754,7 +786,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
                   error: message
                 })
 
-                const retryRotation = await getNextAccount(pluginConfig)
+                const retryRotation = await getNextAccount(pluginConfig, { authType: 'oauth' })
                 if (retryRotation && retryRotation.account.alias !== account.alias) {
                   return customFetch(input, init)
                 }
@@ -790,8 +822,8 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
 
         // Return SDK configuration with custom fetch for rotation
         return {
-          apiKey: 'chatgpt-oauth',
-          baseURL: CODEX_BASE_URL,
+          apiKey: 'multi-auth-router',
+          baseURL: OPENAI_API_BASE_URL,
           fetch: customFetch
         }
       },
@@ -825,6 +857,9 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
               callback: async () => {
                 try {
                   const account = await loginAccount(alias, flow)
+                  if (!account.refreshToken || !account.accessToken || !account.expiresAt) {
+                    return { type: 'failed' as const }
+                  }
                   return {
                     type: 'success' as const,
                     provider: PROVIDER_ID,
@@ -840,7 +875,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
           }
         },
         {
-          label: 'Skip (use existing accounts)',
+          label: 'Manually enter API Key (auto-import)',
           type: 'api' as const
         }
       ]

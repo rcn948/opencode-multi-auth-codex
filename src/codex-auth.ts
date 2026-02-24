@@ -2,7 +2,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { addAccount, loadStore, setActiveAlias, updateAccount } from './store.js'
-import type { AccountCredentials } from './types.js'
+import { isOauthAccount, type AccountCredentials } from './types.js'
 
 export interface CodexAuthTokens {
   id_token: string
@@ -110,6 +110,7 @@ function findMatchingAlias(
   store: ReturnType<typeof loadStore>
 ): string | null {
   for (const account of Object.values(store.accounts)) {
+    if (!isOauthAccount(account)) continue
     if (accountId && account.accountId === accountId) return account.alias
     if (account.accessToken === tokens.access_token) return account.alias
     if (account.refreshToken === tokens.refresh_token) return account.alias
@@ -141,6 +142,7 @@ export function syncCodexAuthFile(): { alias: string | null; added: boolean; upd
   }
   lastFingerprint = fingerprint
   const update: Partial<AccountCredentials> = {
+    authType: 'oauth',
     accessToken: auth.tokens.access_token,
     refreshToken: auth.tokens.refresh_token,
     idToken: auth.tokens.id_token,
@@ -175,7 +177,7 @@ export function writeCodexAuthForAlias(alias: string): void {
   if (!account) {
     throw new Error(`Unknown alias: ${alias}`)
   }
-  if (!account.accessToken || !account.refreshToken || !account.idToken) {
+  if (!isOauthAccount(account) || !account.idToken) {
     throw new Error('Missing token data for alias')
   }
 

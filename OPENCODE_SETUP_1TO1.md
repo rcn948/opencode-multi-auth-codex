@@ -40,13 +40,13 @@ If Node/Bun are missing, install them first.
 Install this repo into OpenCode's config directory:
 
 ```bash
-bun add github:guard22/opencode-multi-auth-codex#v1.0.9 --cwd ~/.config/opencode
+bun add github:dredivaris/opencode-multi-auth-codex#v1.0.9 --cwd ~/.config/opencode
 ```
 
 If you prefer tracking `main` (not recommended for beginners):
 
 ```bash
-bun add github:guard22/opencode-multi-auth-codex --cwd ~/.config/opencode
+bun add github:dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
 ```
 
 ## Optional Plugins (Same Stack)
@@ -87,7 +87,7 @@ Important:
     "oh-my-opencode@3.1.6",
     "opencode-antigravity-auth@1.4.5",
 
-    "file:///Users/YOUR_USER/.config/opencode/node_modules/@guard22/opencode-multi-auth-codex/dist/index.js"
+    "file:///Users/YOUR_USER/.config/opencode/node_modules/@dredivaris/opencode-multi-auth-codex/dist/index.js"
   ],
 
   "permission": {
@@ -207,9 +207,9 @@ Repeat for each account.
 ### Option B: Plugin CLI
 
 ```bash
-node ~/.config/opencode/node_modules/@guard22/opencode-multi-auth-codex/dist/cli.js add acc1
-node ~/.config/opencode/node_modules/@guard22/opencode-multi-auth-codex/dist/cli.js add acc2
-node ~/.config/opencode/node_modules/@guard22/opencode-multi-auth-codex/dist/cli.js status
+node ~/.config/opencode/node_modules/@dredivaris/opencode-multi-auth-codex/dist/cli.js add acc1
+node ~/.config/opencode/node_modules/@dredivaris/opencode-multi-auth-codex/dist/cli.js add acc2
+node ~/.config/opencode/node_modules/@dredivaris/opencode-multi-auth-codex/dist/cli.js status
 ```
 
 Account store file:
@@ -219,6 +219,38 @@ Account store file:
 Security note:
 
 - Treat it like a password vault. It contains refresh tokens.
+
+## Add OpenAI API Accounts (Multi-Account API Keys)
+
+You can add API accounts in two ways.
+
+### Option A: OpenCode UI (auto-import)
+
+In OpenCode:
+
+- Providers / Auth
+- OpenAI
+- Choose **"Manually enter API Key"**
+- Enter your OpenAI API key
+
+This plugin auto-imports each new key into `~/.config/opencode-multi-auth/accounts.json`.
+
+### Option B: Plugin CLI
+
+```bash
+OPENCODE_MULTI_AUTH_API_KEY=sk-... \
+node ~/.config/opencode/node_modules/@dredivaris/opencode-multi-auth-codex/dist/cli.js add-api api1
+
+OPENCODE_MULTI_AUTH_API_KEY=sk-... \
+node ~/.config/opencode/node_modules/@dredivaris/opencode-multi-auth-codex/dist/cli.js add-api api2
+
+node ~/.config/opencode/node_modules/@dredivaris/opencode-multi-auth-codex/dist/cli.js status
+```
+
+Routing behavior:
+
+- Codex models use OAuth account rotation.
+- Non-Codex OpenAI models use API-key account rotation.
 
 ## Codex 5.3 Mapping (How to Use the Newest Codex)
 
@@ -254,7 +286,7 @@ Expected:
 Start local dashboard:
 
 ```bash
-node ~/.config/opencode/node_modules/@guard22/opencode-multi-auth-codex/dist/cli.js web --host 127.0.0.1 --port 3434
+node ~/.config/opencode/node_modules/@dredivaris/opencode-multi-auth-codex/dist/cli.js web --host 127.0.0.1 --port 3434
 ```
 
 Open:
@@ -281,6 +313,15 @@ Fix:
 - Open dashboard and look for ERROR badges.
 - Re-auth the failing account.
 - Add more accounts, or wait for cooldown.
+
+### "No available API key accounts"
+
+You are using a non-Codex model and no API-key account is available.
+
+Fix:
+
+- Add one with `add-api` (CLI) or connect OpenCode OpenAI with "Manually enter API Key"
+- Re-run `status` to confirm API aliases exist
 
 ### 401 / "token invalidated" / "Token refresh failed"
 

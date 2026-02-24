@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { addAccount, loadStore, setActiveAlias, updateAccount } from './store.js';
+import { isOauthAccount } from './types.js';
 const CODEX_DIR = path.join(os.homedir(), '.codex');
 const CODEX_AUTH_FILE = path.join(CODEX_DIR, 'auth.json');
 let lastFingerprint = null;
@@ -88,6 +89,8 @@ function buildAlias(email, accountId, store) {
 }
 function findMatchingAlias(tokens, accountId, email, store) {
     for (const account of Object.values(store.accounts)) {
+        if (!isOauthAccount(account))
+            continue;
         if (accountId && account.accountId === accountId)
             return account.alias;
         if (account.accessToken === tokens.access_token)
@@ -120,6 +123,7 @@ export function syncCodexAuthFile() {
     }
     lastFingerprint = fingerprint;
     const update = {
+        authType: 'oauth',
         accessToken: auth.tokens.access_token,
         refreshToken: auth.tokens.refresh_token,
         idToken: auth.tokens.id_token,
@@ -149,7 +153,7 @@ export function writeCodexAuthForAlias(alias) {
     if (!account) {
         throw new Error(`Unknown alias: ${alias}`);
     }
-    if (!account.accessToken || !account.refreshToken || !account.idToken) {
+    if (!isOauthAccount(account) || !account.idToken) {
         throw new Error('Missing token data for alias');
     }
     const current = loadCodexAuthFile();

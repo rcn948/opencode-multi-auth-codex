@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'node:crypto';
+import { isApiAccount, isOauthAccount } from './types.js';
+export { isApiAccount, isOauthAccount };
 const STORE_DIR_ENV = 'OPENCODE_MULTI_AUTH_STORE_DIR';
 const STORE_FILE_ENV = 'OPENCODE_MULTI_AUTH_STORE_FILE';
 const DEFAULT_STORE_DIR = path.join(os.homedir(), '.config', 'opencode-multi-auth');
@@ -111,6 +113,102 @@ function appendHistory(history, entry) {
     }
     return next;
 }
+function coerceAuthType(raw) {
+    const explicit = raw.authType;
+    if (explicit === 'oauth' || explicit === 'api')
+        return explicit;
+    const hasOauthTokenPair = typeof raw.accessToken === 'string' && raw.accessToken.length > 0 &&
+        typeof raw.refreshToken === 'string' && raw.refreshToken.length > 0;
+    const hasApiKey = typeof raw.apiKey === 'string' && raw.apiKey.length > 0;
+    if (hasApiKey && !hasOauthTokenPair)
+        return 'api';
+    return 'oauth';
+}
+function normalizeAccount(alias, raw) {
+    if (!raw || typeof raw !== 'object')
+        return null;
+    const source = raw;
+    let authType = coerceAuthType(source);
+    const hasApiKey = typeof source.apiKey === 'string' && source.apiKey.length > 0;
+    const hasOauthTokenPair = typeof source.accessToken === 'string' && source.accessToken.length > 0 &&
+        typeof source.refreshToken === 'string' && source.refreshToken.length > 0;
+    if (authType === 'api' && !hasApiKey && hasOauthTokenPair)
+        authType = 'oauth';
+    if (authType === 'oauth' && !hasOauthTokenPair && hasApiKey)
+        authType = 'api';
+    const normalized = {
+        ...source,
+        alias,
+        authType,
+        usageCount: typeof source.usageCount === 'number' ? source.usageCount : 0
+    };
+    if (!Array.isArray(normalized.rateLimitHistory)) {
+        normalized.rateLimitHistory = undefined;
+    }
+    if (authType === 'api') {
+        normalized.apiKey = hasApiKey ? String(source.apiKey) : undefined;
+        normalized.accessToken = undefined;
+        normalized.refreshToken = undefined;
+        normalized.idToken = undefined;
+        normalized.expiresAt = undefined;
+    }
+    else {
+        normalized.apiKey = undefined;
+        normalized.accessToken = typeof source.accessToken === 'string' ? source.accessToken : undefined;
+        normalized.refreshToken = typeof source.refreshToken === 'string' ? source.refreshToken : undefined;
+        normalized.idToken = typeof source.idToken === 'string' ? source.idToken : undefined;
+        normalized.expiresAt = typeof source.expiresAt === 'number' ? source.expiresAt : Date.now();
+    }
+    const changed = JSON.stringify(source) !== JSON.stringify(normalized);
+    return { account: normalized, changed };
+}
+function normalizeStore(raw) {
+    const baseline = emptyStore();
+    if (!raw || typeof raw !== 'object') {
+        return { store: baseline, changed: true };
+    }
+    const source = raw;
+    const accountsSource = source.accounts && typeof source.accounts === 'object'
+        ? source.accounts
+        : {};
+    const accounts = {};
+    let changed = false;
+    for (const [alias, candidate] of Object.entries(accountsSource)) {
+        const normalized = normalizeAccount(alias, candidate);
+        if (!normalized) {
+            changed = true;
+            continue;
+        }
+        changed ||= normalized.changed;
+        accounts[alias] = normalized.account;
+    }
+    const aliases = Object.keys(accounts);
+    let activeAlias = typeof source.activeAlias === 'string' ? source.activeAlias : null;
+    if (!activeAlias || !accounts[activeAlias]) {
+        activeAlias = aliases[0] || null;
+        changed = true;
+    }
+    let rotationIndex = typeof source.rotationIndex === 'number' ? source.rotationIndex : 0;
+    if (!Number.isFinite(rotationIndex) || rotationIndex < 0) {
+        rotationIndex = 0;
+        changed = true;
+    }
+    const lastRotation = typeof source.lastRotation === 'number' ? source.lastRotation : Date.now();
+    const store = {
+        accounts,
+        activeAlias,
+        rotationIndex,
+        lastRotation
+    };
+    if (aliases.length === 0) {
+        store.activeAlias = null;
+        store.rotationIndex = 0;
+    }
+    else {
+        store.rotationIndex = store.rotationIndex % aliases.length;
+    }
+    return { store, changed };
+}
 export function loadStore() {
     storeLocked = false;
     lastStoreError = null;
@@ -130,7 +228,12 @@ export function loadStore() {
                     return emptyStore();
                 }
                 try {
-                    return decryptStore(parsed, passphrase);
+                    const decrypted = decryptStore(parsed, passphrase);
+                    const normalized = normalizeStore(decrypted);
+                    if (normalized.changed) {
+                        saveStore(normalized.store);
+                    }
+                    return normalized.store;
                 }
                 catch (err) {
                     storeLocked = true;
@@ -139,7 +242,11 @@ export function loadStore() {
                     return emptyStore();
                 }
             }
-            return parsed;
+            const normalized = normalizeStore(parsed);
+            if (normalized.changed) {
+                saveStore(normalized.store);
+            }
+            return normalized.store;
         }
         catch {
             storeLocked = true;
@@ -233,12 +340,19 @@ export function getStoreDiagnostics() {
 }
 export function addAccount(alias, creds) {
     const store = loadStore();
-    const entry = buildHistoryEntry(creds.rateLimits);
-    store.accounts[alias] = {
+    const normalized = normalizeAccount(alias, {
         ...creds,
         alias,
+        usageCount: 0
+    });
+    if (!normalized)
+        return store;
+    const account = normalized.account;
+    const entry = buildHistoryEntry(creds.rateLimits);
+    store.accounts[alias] = {
+        ...account,
         usageCount: 0,
-        rateLimitHistory: entry ? [entry] : creds.rateLimitHistory
+        rateLimitHistory: entry ? [entry] : account.rateLimitHistory
     };
     if (!store.activeAlias) {
         store.activeAlias = alias;
@@ -260,7 +374,10 @@ export function updateAccount(alias, updates) {
     const store = loadStore();
     if (store.accounts[alias]) {
         const current = store.accounts[alias];
-        const next = { ...current, ...updates };
+        const normalized = normalizeAccount(alias, { ...current, ...updates });
+        if (!normalized)
+            return store;
+        const next = normalized.account;
         if (updates.rateLimits || next.rateLimits) {
             const entry = buildHistoryEntry(next.rateLimits);
             if (entry) {
@@ -271,6 +388,13 @@ export function updateAccount(alias, updates) {
         saveStore(store);
     }
     return store;
+}
+export function upsertAccount(alias, creds) {
+    const store = loadStore();
+    if (store.accounts[alias]) {
+        return updateAccount(alias, creds);
+    }
+    return addAccount(alias, creds);
 }
 export function setActiveAlias(alias) {
     const store = loadStore();

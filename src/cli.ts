@@ -2,9 +2,10 @@
 
 import { fileURLToPath } from 'node:url'
 import { loginAccount } from './auth.js'
-import { removeAccount, listAccounts, getStorePath, loadStore } from './store.js'
+import { addAccount, removeAccount, listAccounts, getStorePath, loadStore } from './store.js'
 import { startWebConsole } from './web.js'
 import { disableService, installService, serviceStatus } from './systemd.js'
+import { isOauthAccount } from './types.js'
 
 const args = process.argv.slice(2)
 const command = args[0]
@@ -14,6 +15,12 @@ function getFlagValue(flag: string): string | undefined {
   const idx = args.indexOf(flag)
   if (idx === -1) return undefined
   return args[idx + 1]
+}
+
+function maskApiKey(key?: string): string {
+  if (!key) return 'missing'
+  if (key.length <= 8) return '****'
+  return `${key.slice(0, 4)}...${key.slice(-4)}`
 }
 
 async function main(): Promise<void> {
@@ -33,6 +40,31 @@ async function main(): Promise<void> {
         console.error(`Failed to add account: ${err}`)
         process.exit(1)
       }
+      break
+    }
+
+    case 'add-api': {
+      if (!alias) {
+        console.error('Usage: opencode-multi-auth add-api <alias> [--key <apiKey>]')
+        console.error('Or set OPENCODE_MULTI_AUTH_API_KEY in your environment')
+        process.exit(1)
+      }
+      const key = getFlagValue('--key') || args[2] || process.env.OPENCODE_MULTI_AUTH_API_KEY
+      if (!key) {
+        console.error('Missing API key. Pass --key or set OPENCODE_MULTI_AUTH_API_KEY.')
+        process.exit(1)
+      }
+
+      addAccount(alias, {
+        authType: 'api',
+        apiKey: key,
+        source: 'opencode',
+        lastSeenAt: Date.now(),
+        authInvalid: false,
+        authInvalidatedAt: undefined
+      })
+
+      console.log(`API account "${alias}" added.`)
       break
     }
 
@@ -56,7 +88,11 @@ async function main(): Promise<void> {
       } else {
         console.log('\nConfigured accounts:\n')
         for (const acc of accounts) {
-          console.log(`  ${acc.alias}: ${acc.email || 'unknown email'} (uses: ${acc.usageCount})`)
+          const typeLabel = acc.authType === 'api' ? 'api' : 'oauth'
+          const ident = acc.authType === 'api'
+            ? `key=${maskApiKey(acc.apiKey)}`
+            : (acc.email || 'unknown email')
+          console.log(`  ${acc.alias} [${typeLabel}]: ${ident} (uses: ${acc.usageCount})`)
         }
         console.log()
       }
@@ -82,12 +118,17 @@ async function main(): Promise<void> {
         const isRateLimited = acc.rateLimitedUntil && acc.rateLimitedUntil > Date.now()
           ? ` [RATE LIMITED until ${new Date(acc.rateLimitedUntil).toLocaleTimeString()}]`
           : ''
-        const expiry = new Date(acc.expiresAt).toLocaleString()
+        const typeLabel = acc.authType === 'api' ? 'api' : 'oauth'
 
-        console.log(`  ${acc.alias}${isActive}${isRateLimited}`)
+        console.log(`  ${acc.alias}${isActive}${isRateLimited} [${typeLabel}]`)
         console.log(`    Email: ${acc.email || 'unknown'}`)
         console.log(`    Uses: ${acc.usageCount}`)
-        console.log(`    Token expires: ${expiry}`)
+        if (isOauthAccount(acc)) {
+          const expiry = new Date(acc.expiresAt).toLocaleString()
+          console.log(`    Token expires: ${expiry}`)
+        } else {
+          console.log(`    API key: ${maskApiKey(acc.apiKey)}`)
+        }
         console.log()
       }
       break
@@ -143,6 +184,7 @@ opencode-multi-auth - Multi-account OAuth rotation for OpenAI Codex
 
 Commands:
   add <alias>      Add a new account (opens browser for OAuth)
+  add-api <alias>  Add an OpenAI API account
   remove <alias>   Remove an account
   list             List all configured accounts
   status           Show detailed account status
@@ -153,6 +195,7 @@ Commands:
 
 Examples:
   opencode-multi-auth add personal
+  OPENCODE_MULTI_AUTH_API_KEY=sk-... opencode-multi-auth add-api work-api
   opencode-multi-auth add work
   opencode-multi-auth add backup
   opencode-multi-auth status

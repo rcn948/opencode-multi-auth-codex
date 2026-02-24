@@ -1,4 +1,5 @@
-import type { AccountStore, AccountCredentials } from './types.js';
+import { isApiAccount, isOauthAccount, AccountStore, AccountCredentials } from './types.js';
+export { isApiAccount, isOauthAccount };
 export declare function loadStore(): AccountStore;
 export declare function saveStore(store: AccountStore): void;
 export declare function getStoreDiagnostics(): {
@@ -11,6 +12,7 @@ export declare function getStoreDiagnostics(): {
 export declare function addAccount(alias: string, creds: Omit<AccountCredentials, 'alias' | 'usageCount'>): AccountStore;
 export declare function removeAccount(alias: string): AccountStore;
 export declare function updateAccount(alias: string, updates: Partial<AccountCredentials>): AccountStore;
+export declare function upsertAccount(alias: string, creds: Omit<AccountCredentials, 'alias' | 'usageCount'>): AccountStore;
 export declare function setActiveAlias(alias: string | null): AccountStore;
 export declare function getActiveAccount(): AccountCredentials | null;
 export declare function listAccounts(): AccountCredentials[];

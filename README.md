@@ -1,6 +1,6 @@
 # opencode-multi-auth-codex
 
-Multi-account OAuth rotation for OpenAI Codex. Auto-rotates between your ChatGPT Plus/Pro accounts.
+Multi-account auth rotation for OpenAI in OpenCode. Supports both ChatGPT OAuth (Codex backend) and OpenAI API keys.
 
 > **Based on [opencode-openai-codex-auth](https://github.com/numman-ali/opencode-openai-codex-auth) by [@nummanali](https://x.com/nummanali)**. Forked and modified to add multi-account rotation support.
 
@@ -11,14 +11,14 @@ This fork patches the plugin to talk to **ChatGPT Codex backend** (`chatgpt.com/
 **Install from GitHub (recommended for this fork):**
 
 ```bash
-bun add github:guard22/opencode-multi-auth-codex --cwd ~/.config/opencode
+bun add github:dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
 ```
 
 Then set the plugin entry in `~/.config/opencode/opencode.json`:
 
 ```json
 {
-  "plugin": ["github:guard22/opencode-multi-auth-codex"]
+  "plugin": ["github:dredivaris/opencode-multi-auth-codex"]
 }
 ```
 
@@ -32,7 +32,7 @@ Add to your `~/.config/opencode/opencode.json`:
 
 ```json
 {
-  "plugin": ["github:guard22/opencode-multi-auth-codex"]
+  "plugin": ["github:dredivaris/opencode-multi-auth-codex"]
 }
 ```
 
@@ -43,13 +43,13 @@ OpenCode will auto-install on first run.
 If auto-install fails, install manually:
 
 ```bash
-bun add github:guard22/opencode-multi-auth-codex --cwd ~/.config/opencode
+bun add github:dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
 ```
 
 ### From Source
 
 ```bash
-git clone https://github.com/guard22/opencode-multi-auth-codex.git
+git clone https://github.com/dredivaris/opencode-multi-auth-codex.git
 cd opencode-multi-auth-codex
 bun install
 bun run build
@@ -66,6 +66,19 @@ opencode-multi-auth add backup
 
 # Each command opens your browser - log in with a different ChatGPT account each time
 ```
+
+Add API-key accounts (optional):
+
+```bash
+# safer: provide key via env var
+OPENCODE_MULTI_AUTH_API_KEY=sk-... opencode-multi-auth add-api work-api
+
+# or pass directly
+opencode-multi-auth add-api backup-api --key sk-...
+```
+
+If you use OpenCode's built-in "Manually enter API Key" for provider `openai`, this plugin
+auto-imports it into the multi-account store by default.
 
 ## Verify Setup
 
@@ -117,6 +130,7 @@ Open `http://127.0.0.1:3434` to manage Codex CLI tokens from `~/.codex/auth.json
 - Switch auth.json to a stored token
 - Refresh OAuth tokens (per-token or all)
 - Refresh 5-hour and weekly limits manually (probe-run per alias)
+- Add OpenAI API-key accounts directly from the dashboard
 - Search/filter by alias/email/tags/notes
 - Sort by remaining limits, expiry, or alias; recommended token badge
 - Tag and annotate tokens (notes)
@@ -165,7 +179,7 @@ Add to your `~/.config/opencode/opencode.json`:
 
 ```json
 {
-  "plugin": ["github:guard22/opencode-multi-auth-codex"]
+  "plugin": ["github:dredivaris/opencode-multi-auth-codex"]
 }
 ```
 
@@ -175,7 +189,7 @@ Or with other plugins:
 {
   "plugin": [
     "oh-my-opencode",
-    "github:guard22/opencode-multi-auth-codex"
+    "github:dredivaris/opencode-multi-auth-codex"
   ]
 }
 ```
@@ -248,7 +262,7 @@ If OpenCode fails to boot with:
 
 ```
 BunInstallFailedError
-{ "pkg": "github:guard22/opencode-multi-auth-codex", "version": "latest" }
+{ "pkg": "github:dredivaris/opencode-multi-auth-codex", "version": "latest" }
 ```
 
 It usually means an older `@a3fckx/opencode-multi-auth` dependency is still present.
@@ -268,7 +282,7 @@ Fix:
 2) Reinstall:
 
 ```bash
-bun add github:guard22/opencode-multi-auth-codex --cwd ~/.config/opencode
+bun add github:dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
 ```
 
 Optional fallback: use a file path plugin entry if installs are blocked:
@@ -276,16 +290,26 @@ Optional fallback: use a file path plugin entry if installs are blocked:
 ```json
 {
   "plugin": [
-    "file:///Users/<you>/.config/opencode/node_modules/@guard22/opencode-multi-auth-codex/dist/index.js"
+    "file:///Users/<you>/.config/opencode/node_modules/@dredivaris/opencode-multi-auth-codex/dist/index.js"
   ]
 }
 ```
+
+### "No available API key accounts"
+
+You are using a non-Codex OpenAI model, but no usable API accounts exist.
+
+Fix:
+
+- Add one with `opencode-multi-auth add-api <alias>`
+- Or connect OpenCode `openai` provider with "Manually enter API Key" (auto-imports)
 
 ## How It Works
 
 | Feature | Behavior |
 |---------|----------|
-| **Rotation** | Round-robin across all accounts per API call |
+| **Rotation** | Round-robin within auth pool (`oauth` or `api`) per API call |
+| **Routing** | Codex models use OAuth pool; non-Codex OpenAI models use API-key pool |
 | **Rate Limits** | Auto-skips rate-limited account for 5 min, uses next |
 | **Token Refresh** | Auto-refreshes tokens before expiry |
 | **Models** | Auto-discovers GPT-5.x models from OpenAI API |
@@ -296,6 +320,7 @@ Optional fallback: use a file path plugin entry if installs are blocked:
 | Command | Description |
 |---------|-------------|
 | `add <alias>` | Add new account via OAuth (opens browser) |
+| `add-api <alias>` | Add OpenAI API account |
 | `remove <alias>` | Remove an account |
 | `list` | List all configured accounts |
 | `status` | Detailed status with usage counts |

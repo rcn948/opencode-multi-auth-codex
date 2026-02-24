@@ -8,9 +8,10 @@ import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createAuthorizationFlow, loginAccount, refreshToken } from './auth.js';
 import { getCodexAuthPath, getCodexAuthStatus, syncCodexAuthFile, writeCodexAuthForAlias } from './codex-auth.js';
-import { getStoreStatus, listAccounts, loadStore, removeAccount, updateAccount } from './store.js';
+import { addAccount, getStoreStatus, listAccounts, loadStore, removeAccount, updateAccount } from './store.js';
 import { getRefreshQueueState, startRefreshQueue, stopRefreshQueue } from './refresh-queue.js';
 import { getLogPath, logError, logInfo, readLogTail } from './logger.js';
+import { isOauthAccount } from './types.js';
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 3434;
 const SYNC_INTERVAL_MS = 3000;
@@ -437,6 +438,11 @@ const HTML = `<!doctype html>
           <input id="addAliasInput" placeholder="New account alias (e.g., acc8)" />
           <button class="secondary" id="addAccountBtn">Add account</button>
         </div>
+        <div class="add-row">
+          <input id="addApiAliasInput" placeholder="API alias (optional)" />
+          <input id="addApiKeyInput" type="password" placeholder="OpenAI API key" />
+          <button class="secondary" id="addApiBtn">Add API key</button>
+        </div>
         <div class="queue" id="queue"></div>
         <div class="notice" id="notice"></div>
         <div class="notice" id="loginNotice"></div>
@@ -509,6 +515,9 @@ const HTML = `<!doctype html>
       const logPathEl = document.getElementById('logPath')
       const addAliasInput = document.getElementById('addAliasInput')
       const addAccountBtn = document.getElementById('addAccountBtn')
+      const addApiAliasInput = document.getElementById('addApiAliasInput')
+      const addApiKeyInput = document.getElementById('addApiKeyInput')
+      const addApiBtn = document.getElementById('addApiBtn')
       const agPathEl = document.getElementById('antigravityPath')
       const agNoticeEl = document.getElementById('antigravityNotice')
       const agAccountsEl = document.getElementById('antigravityAccounts')
@@ -733,9 +742,11 @@ const HTML = `<!doctype html>
         const filtered = sortAccounts(applyFilters(state.accounts), state)
         const cards = filtered.map((acc) => {
           const active = acc.alias === state.currentAlias
+          const isOauth = acc.authType !== 'api'
           const recommended = acc.alias === state.recommendedAlias
-          const badge = active ? 'On device' : 'Stored'
+          const badge = active ? (isOauth ? 'On device' : 'Active') : 'Stored'
           const badgeClass = active ? 'badge' : 'badge inactive'
+          const typeLabel = isOauth ? 'OAuth' : 'API'
           const status = acc.limitStatus || 'idle'
           const statusLabels = {
             idle: 'idle',
@@ -768,6 +779,7 @@ const HTML = `<!doctype html>
                 </div>
               </div>
               <div class="account-meta">
+                <div>Type: \${typeLabel}</div>
                 <div>Token expires: \${formatDate(acc.expiresAt)}</div>
                 <div>Last seen: \${acc.lastSeenAt ? formatDate(acc.lastSeenAt) : acc.lastUsed ? formatDate(acc.lastUsed) : 'never'}</div>
                 <div>Last refresh: \${acc.lastRefresh ? formatDate(acc.lastRefresh) : 'unknown'}</div>
@@ -786,9 +798,9 @@ const HTML = `<!doctype html>
                 <button class="secondary small" data-action="save-meta" data-alias="\${escapeHtml(acc.alias)}">Save</button>
               </div>
               <div class="card-actions">
-                <button data-action="switch" data-alias="\${escapeHtml(acc.alias)}">Use on device</button>
-                <button class="secondary" data-action="refresh-token" data-alias="\${escapeHtml(acc.alias)}">Refresh token</button>
-                <button class="secondary" data-action="refresh" data-alias="\${escapeHtml(acc.alias)}">Refresh limits</button>
+                \${isOauth ? \`<button data-action="switch" data-alias="\${escapeHtml(acc.alias)}">Use on device</button>\` : ''}
+                \${isOauth ? \`<button class="secondary" data-action="refresh-token" data-alias="\${escapeHtml(acc.alias)}">Refresh token</button>\` : ''}
+                \${isOauth ? \`<button class="secondary" data-action="refresh" data-alias="\${escapeHtml(acc.alias)}">Refresh limits</button>\` : ''}
                 <button class="danger" data-action="remove" data-alias="\${escapeHtml(acc.alias)}">Remove</button>
               </div>
             </div>
@@ -1187,6 +1199,36 @@ const HTML = `<!doctype html>
         })
       }
 
+      if (addApiBtn && addApiKeyInput) {
+        const addApiAccount = async () => {
+          const alias = addApiAliasInput ? addApiAliasInput.value.trim() : ''
+          const apiKey = addApiKeyInput.value.trim()
+          if (!apiKey) {
+            showToast('API key is required')
+            return
+          }
+          try {
+            const result = await api('/api/account/add-api', {
+              method: 'POST',
+              body: JSON.stringify({ alias, apiKey })
+            })
+            addApiKeyInput.value = ''
+            if (addApiAliasInput && result?.alias) {
+              addApiAliasInput.value = result.alias
+            }
+            showToast(result?.existing ? 'API key already stored' : 'API account added')
+            await refreshState()
+          } catch {
+            showToast('Failed to add API key')
+          }
+        }
+
+        addApiBtn.addEventListener('click', addApiAccount)
+        addApiKeyInput.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') addApiAccount()
+        })
+      }
+
       searchInput.addEventListener('input', () => {
         if (latestState) renderAccounts(latestState)
       })
@@ -1222,8 +1264,17 @@ function sendJson(res, status, payload) {
     res.end(data);
 }
 function scrubAccount(account) {
-    const { accessToken, refreshToken, idToken, ...rest } = account;
+    const { accessToken, refreshToken, idToken, apiKey, ...rest } = account;
     return rest;
+}
+function buildApiAlias(existingAliases) {
+    let candidate = 'api';
+    let suffix = 1;
+    while (existingAliases.has(candidate)) {
+        candidate = `api-${suffix}`;
+        suffix += 1;
+    }
+    return candidate;
 }
 async function readJsonBody(req) {
     return new Promise((resolve, reject) => {
@@ -1738,6 +1789,43 @@ export function startWebConsole(options) {
             }
             return;
         }
+        if (req.method === 'POST' && path === '/api/account/add-api') {
+            const body = await readJsonBody(req);
+            const key = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+            if (!key) {
+                sendJson(res, 400, { error: 'Missing apiKey' });
+                return;
+            }
+            const store = loadStore();
+            const duplicate = Object.values(store.accounts).find((acc) => acc.authType === 'api' && acc.apiKey === key);
+            if (duplicate) {
+                updateAccount(duplicate.alias, {
+                    authType: 'api',
+                    apiKey: key,
+                    source: 'opencode',
+                    authInvalid: false,
+                    authInvalidatedAt: undefined
+                });
+                sendJson(res, 200, { ok: true, alias: duplicate.alias, existing: true });
+                return;
+            }
+            const requestedAlias = typeof body.alias === 'string' ? body.alias.trim() : '';
+            const alias = requestedAlias || buildApiAlias(new Set(Object.keys(store.accounts)));
+            if (store.accounts[alias]) {
+                sendJson(res, 409, { error: `Alias already exists: ${alias}` });
+                return;
+            }
+            addAccount(alias, {
+                authType: 'api',
+                apiKey: key,
+                source: 'opencode',
+                lastSeenAt: Date.now(),
+                authInvalid: false,
+                authInvalidatedAt: undefined
+            });
+            sendJson(res, 200, { ok: true, alias });
+            return;
+        }
         if (req.method === 'POST' && path === '/api/switch') {
             const body = await readJsonBody(req);
             if (!body.alias) {
@@ -1745,6 +1833,12 @@ export function startWebConsole(options) {
                 return;
             }
             try {
+                const store = loadStore();
+                const account = store.accounts[String(body.alias)];
+                if (!isOauthAccount(account) || !account.idToken) {
+                    sendJson(res, 400, { error: 'Switch is only supported for OAuth accounts' });
+                    return;
+                }
                 writeCodexAuthForAlias(body.alias);
                 sendJson(res, 200, { ok: true });
             }
@@ -1796,6 +1890,10 @@ export function startWebConsole(options) {
             }
             const results = [];
             for (const account of targets) {
+                if (!isOauthAccount(account)) {
+                    results.push({ alias: account.alias, updated: false, error: 'API accounts do not use refresh tokens' });
+                    continue;
+                }
                 if (!account.refreshToken) {
                     results.push({ alias: account.alias, updated: false, error: 'No refresh token' });
                     continue;
@@ -1821,7 +1919,7 @@ export function startWebConsole(options) {
         }
         if (req.method === 'POST' && path === '/api/limits/refresh') {
             const body = await readJsonBody(req);
-            const accounts = listAccounts().filter((acc) => acc.idToken);
+            const accounts = listAccounts().filter((acc) => isOauthAccount(acc) && acc.idToken);
             if (body.alias && !accounts.find((acc) => acc.alias === body.alias)) {
                 sendJson(res, 400, { error: 'Unknown alias' });
                 return;

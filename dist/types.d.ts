@@ -1,10 +1,13 @@
+export type AccountAuthType = 'oauth' | 'api';
 export interface AccountCredentials {
     alias: string;
-    accessToken: string;
-    refreshToken: string;
+    authType: AccountAuthType;
+    accessToken?: string;
+    refreshToken?: string;
     idToken?: string;
     accountId?: string;
-    expiresAt: number;
+    expiresAt?: number;
+    apiKey?: string;
     email?: string;
     lastRefresh?: string;
     lastSeenAt?: number;
@@ -31,6 +34,18 @@ export interface AccountCredentials {
     notes?: string;
     source?: 'opencode' | 'codex';
 }
+export type OAuthAccountCredentials = AccountCredentials & {
+    authType: 'oauth';
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: number;
+};
+export type ApiAccountCredentials = AccountCredentials & {
+    authType: 'api';
+    apiKey: string;
+};
+export declare function isOauthAccount(account: AccountCredentials | null | undefined): account is OAuthAccountCredentials;
+export declare function isApiAccount(account: AccountCredentials | null | undefined): account is ApiAccountCredentials;
 export interface RateLimitWindow {
     limit?: number;
     remaining?: number;

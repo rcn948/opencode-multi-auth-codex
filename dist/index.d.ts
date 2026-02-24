@@ -1,4 +1,6 @@
 import type { Plugin } from '@opencode-ai/plugin';
+import { type AccountAuthType } from './types.js';
+export declare function selectAuthTypeForRequest(model: string | undefined, requestUrl?: string): AccountAuthType;
 /**
  * Multi-account OAuth plugin for OpenCode
  *

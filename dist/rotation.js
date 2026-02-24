@@ -1,5 +1,6 @@
 import { getStoreDiagnostics, loadStore, saveStore, updateAccount } from './store.js';
 import { ensureValidToken } from './auth.js';
+import { isApiAccount, isOauthAccount } from './types.js';
 function shuffled(input) {
     const a = [...input];
     for (let i = a.length - 1; i > 0; i -= 1) {
@@ -8,13 +9,16 @@ function shuffled(input) {
     }
     return a;
 }
-export async function getNextAccount(config) {
+export async function getNextAccount(config, options) {
     let store = loadStore();
     const aliases = Object.keys(store.accounts);
     if (aliases.length === 0) {
         const diag = getStoreDiagnostics();
         const extra = diag.error ? ` (${diag.error})` : '';
-        console.error(`[multi-auth] No accounts configured. Run: opencode-multi-auth add <alias>${extra}`);
+        const addCommand = options?.authType === 'api'
+            ? 'opencode-multi-auth add-api <alias>'
+            : 'opencode-multi-auth add <alias>';
+        console.error(`[multi-auth] No accounts configured. Run: ${addCommand}${extra}`);
         if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
             console.error(`[multi-auth] store file: ${diag.storeFile}`);
         }
@@ -23,6 +27,8 @@ export async function getNextAccount(config) {
     const now = Date.now();
     const availableAliases = aliases.filter(alias => {
         const acc = store.accounts[alias];
+        if (options?.authType && acc.authType !== options.authType)
+            return false;
         const notRateLimited = !acc.rateLimitedUntil || acc.rateLimitedUntil < now;
         const notModelUnsupported = !acc.modelUnsupportedUntil || acc.modelUnsupportedUntil < now;
         const notWorkspaceDeactivated = !acc.workspaceDeactivatedUntil || acc.workspaceDeactivatedUntil < now;
@@ -75,13 +81,26 @@ export async function getNextAccount(config) {
     };
     const { aliases: candidates, nextIndex } = buildCandidates();
     for (const candidate of candidates) {
-        const token = await ensureValidToken(candidate);
-        if (!token) {
+        const current = store.accounts[candidate];
+        let credential = null;
+        let credentialType = null;
+        if (isOauthAccount(current)) {
+            credentialType = 'oauth';
+            credential = await ensureValidToken(candidate);
+        }
+        else if (isApiAccount(current)) {
+            credentialType = 'api';
+            credential = current.apiKey;
+        }
+        if (!credential || !credentialType) {
             // Don't hard-fail the whole system on a single broken account.
             // Put it on a short cooldown so rotation can keep working.
+            const reason = current?.authType === 'api'
+                ? '[multi-auth] API key unavailable for account'
+                : '[multi-auth] Token unavailable (refresh failed?)';
             store = updateAccount(candidate, {
                 rateLimitedUntil: now + tokenFailureCooldownMs,
-                limitError: '[multi-auth] Token unavailable (refresh failed?)',
+                limitError: reason,
                 lastLimitErrorAt: now
             });
             continue;
@@ -97,7 +116,11 @@ export async function getNextAccount(config) {
             store.rotationIndex = nextIndex(candidate);
         }
         saveStore(store);
-        return { account: store.accounts[candidate], token };
+        return {
+            account: store.accounts[candidate],
+            credential,
+            authType: credentialType
+        };
     }
     console.error('[multi-auth] No available accounts (token refresh failed on all candidates).');
     return null;

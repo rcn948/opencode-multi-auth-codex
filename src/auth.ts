@@ -10,7 +10,7 @@ import {
   getEmailFromClaims,
   getExpiryFromClaims
 } from './codex-auth.js'
-import type { AccountCredentials } from './types.js'
+import { isOauthAccount, type AccountCredentials } from './types.js'
 
 // OpenAI OAuth endpoints (same as official Codex CLI)
 const OPENAI_ISSUER = 'https://auth.openai.com'
@@ -142,6 +142,7 @@ export async function loginAccount(
           getAccountIdFromClaims(accessClaims)
 
         const store = addAccount(alias, {
+          authType: 'oauth',
           accessToken: tokens.access_token,
           refreshToken: tokens.refresh_token,
           idToken: tokens.id_token,
@@ -205,7 +206,7 @@ export async function refreshToken(alias: string): Promise<AccountCredentials | 
   const store = loadStore()
   const account = store.accounts[alias]
 
-  if (!account?.refreshToken) {
+  if (!isOauthAccount(account) || !account.refreshToken) {
     console.error(`[multi-auth] No refresh token for ${alias}`)
     return null
   }
@@ -270,7 +271,7 @@ export async function ensureValidToken(alias: string): Promise<string | null> {
   const store = loadStore()
   const account = store.accounts[alias]
 
-  if (!account) return null
+  if (!isOauthAccount(account)) return null
 
   // Refresh if expiring within 5 minutes
   const bufferMs = 5 * 60 * 1000

@@ -7,6 +7,7 @@ import { listAccounts, updateAccount } from './store.js';
 import { DEFAULT_CONFIG } from './types.js';
 const PROVIDER_ID = 'openai';
 const CODEX_BASE_URL = 'https://chatgpt.com/backend-api';
+const OPENAI_API_BASE_URL = 'https://api.openai.com/v1';
 const REDIRECT_PORT = 1455;
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/auth/callback`;
 const URL_PATHS = {
@@ -73,14 +74,21 @@ function extractPathAndSearch(url) {
 }
 function toCodexBackendUrl(originalUrl) {
     const pathAndSearch = extractPathAndSearch(originalUrl);
-    // Map OpenAI v1 endpoints to ChatGPT Codex endpoints.
-    let mapped = pathAndSearch;
-    if (mapped.includes(URL_PATHS.RESPONSES)) {
-        mapped = mapped.replace(URL_PATHS.RESPONSES, URL_PATHS.CODEX_RESPONSES);
+    const [pathname, search = ''] = pathAndSearch.split('?');
+    let mappedPath = pathname;
+    if (mappedPath === '/v1/responses') {
+        mappedPath = '/codex/responses';
     }
-    else if (mapped.includes('/chat/completions')) {
-        mapped = mapped.replace('/chat/completions', '/codex/chat/completions');
+    else if (mappedPath === '/responses') {
+        mappedPath = '/codex/responses';
     }
+    else if (mappedPath === '/v1/chat/completions') {
+        mappedPath = '/codex/chat/completions';
+    }
+    else if (mappedPath === '/chat/completions') {
+        mappedPath = '/codex/chat/completions';
+    }
+    const mapped = search ? `${mappedPath}?${search}` : mappedPath;
     return new URL(mapped, CODEX_BASE_URL).toString();
 }
 function filterInput(input) {
@@ -98,7 +106,7 @@ function filterInput(input) {
 }
 function normalizeModel(model) {
     if (!model)
-        return 'gpt-5.1';
+        return undefined;
     const modelId = model.includes('/') ? model.split('/').pop() : model;
     const baseModel = modelId.replace(/-(?:none|low|medium|high|xhigh)$/, '');
     // OpenCode currently allowlists gpt-5.2-codex, but we can route it to the latest
@@ -114,6 +122,15 @@ function normalizeModel(model) {
         return latestModel;
     }
     return baseModel;
+}
+export function selectAuthTypeForRequest(model, requestUrl) {
+    const modelId = model?.includes('/') ? model.split('/').pop() : model;
+    const baseModel = modelId?.replace(/-(?:none|low|medium|high|xhigh)$/, '') || '';
+    if (baseModel.includes('codex'))
+        return 'oauth';
+    if (requestUrl && requestUrl.includes('/codex/'))
+        return 'oauth';
+    return 'api';
 }
 function ensureContentType(headers) {
     const responseHeaders = new Headers(headers);
@@ -491,18 +508,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                 // Custom fetch with multi-account rotation
                 const customFetch = async (input, init) => {
                     await syncAuthFromOpenCode(getAuth);
-                    const rotation = await getNextAccount(pluginConfig);
-                    if (!rotation) {
-                        return new Response(JSON.stringify({ error: { message: 'No available accounts' } }), { status: 503, headers: { 'Content-Type': 'application/json' } });
-                    }
-                    const { account, token } = rotation;
-                    const decoded = decodeJWT(token);
-                    const accountId = decoded?.[JWT_CLAIM_PATH]?.chatgpt_account_id;
-                    if (!accountId) {
-                        return new Response(JSON.stringify({ error: { message: '[multi-auth] Failed to extract accountId from token' } }), { status: 401, headers: { 'Content-Type': 'application/json' } });
-                    }
                     const originalUrl = extractRequestUrl(input);
-                    const url = toCodexBackendUrl(originalUrl);
                     let body = {};
                     try {
                         body = init?.body ? JSON.parse(init.body) : {};
@@ -510,17 +516,24 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                     catch {
                         body = {};
                     }
+                    const authType = selectAuthTypeForRequest(body.model, originalUrl);
+                    const rotation = await getNextAccount(pluginConfig, { authType });
+                    if (!rotation) {
+                        const label = authType === 'api' ? 'API key' : 'OAuth';
+                        return new Response(JSON.stringify({ error: { message: `No available ${label} accounts` } }), { status: 503, headers: { 'Content-Type': 'application/json' } });
+                    }
+                    const { account, credential } = rotation;
                     const isStreaming = body?.stream === true;
                     const normalizedModel = normalizeModel(body.model);
                     const reasoningMatch = body.model?.match(/-(none|low|medium|high|xhigh)$/);
                     const payload = {
                         ...body,
-                        model: normalizedModel,
+                        ...(normalizedModel ? { model: normalizedModel } : {}),
                         store: false
                     };
                     // Note: The ChatGPT Codex backend does not currently accept
                     // `truncation`. Keep this opt-in and default off.
-                    if (payload.truncation === undefined) {
+                    if (authType === 'oauth' && payload.truncation === undefined) {
                         const truncationRaw = (process.env.OPENCODE_MULTI_AUTH_TRUNCATION || '').trim();
                         if (truncationRaw && truncationRaw !== 'disabled' && truncationRaw !== 'false' && truncationRaw !== '0') {
                             payload.truncation = truncationRaw;
@@ -537,24 +550,44 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                         };
                     }
                     delete payload.reasoning_effort;
+                    const url = authType === 'oauth'
+                        ? toCodexBackendUrl(originalUrl)
+                        : originalUrl;
                     try {
                         const headers = new Headers(init?.headers || {});
                         headers.delete('x-api-key');
                         headers.set('Content-Type', 'application/json');
-                        headers.set('Authorization', `Bearer ${token}`);
-                        headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
-                        headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES);
-                        headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
-                        const cacheKey = payload?.prompt_cache_key;
-                        if (cacheKey) {
-                            headers.set(OPENAI_HEADERS.CONVERSATION_ID, cacheKey);
-                            headers.set(OPENAI_HEADERS.SESSION_ID, cacheKey);
+                        headers.set('Authorization', `Bearer ${credential}`);
+                        if (authType === 'oauth') {
+                            const decoded = decodeJWT(credential);
+                            const accountId = decoded?.[JWT_CLAIM_PATH]?.chatgpt_account_id;
+                            if (!accountId) {
+                                return new Response(JSON.stringify({ error: { message: '[multi-auth] Failed to extract accountId from token' } }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+                            }
+                            headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
+                            headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES);
+                            headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
+                            const cacheKey = payload?.prompt_cache_key;
+                            if (cacheKey) {
+                                headers.set(OPENAI_HEADERS.CONVERSATION_ID, cacheKey);
+                                headers.set(OPENAI_HEADERS.SESSION_ID, cacheKey);
+                            }
+                            else {
+                                headers.delete(OPENAI_HEADERS.CONVERSATION_ID);
+                                headers.delete(OPENAI_HEADERS.SESSION_ID);
+                            }
+                            headers.set('accept', 'text/event-stream');
                         }
                         else {
+                            headers.delete(OPENAI_HEADERS.ACCOUNT_ID);
+                            headers.delete(OPENAI_HEADERS.BETA);
+                            headers.delete(OPENAI_HEADERS.ORIGINATOR);
                             headers.delete(OPENAI_HEADERS.CONVERSATION_ID);
                             headers.delete(OPENAI_HEADERS.SESSION_ID);
+                            if (!headers.has('accept')) {
+                                headers.set('accept', 'application/json');
+                            }
                         }
-                        headers.set('accept', 'text/event-stream');
                         const res = await fetch(url, {
                             method: init?.method || 'POST',
                             headers,
@@ -566,39 +599,36 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                                 rateLimits: mergeRateLimits(account.rateLimits, limitUpdate)
                             });
                         }
-                        // Handle rate limiting with automatic rotation
                         if (res.status === 401 || res.status === 403) {
                             const errorData = await res.clone().json().catch(() => ({}));
                             const message = errorData?.error?.message || '';
-                            if (message.toLowerCase().includes('invalidated') || res.status === 401) {
+                            if (authType === 'api' || message.toLowerCase().includes('invalidated') || res.status === 401) {
                                 markAuthInvalid(account.alias);
                             }
-                            const retryRotation = await getNextAccount(pluginConfig);
+                            const retryRotation = await getNextAccount(pluginConfig, { authType });
                             if (retryRotation && retryRotation.account.alias !== account.alias) {
                                 return customFetch(input, init);
                             }
                             return new Response(JSON.stringify({
                                 error: {
-                                    message: `[multi-auth][acc=${account.alias}] Unauthorized on all accounts. ${message}`.trim()
+                                    message: `[multi-auth][acc=${account.alias}] Unauthorized on all ${authType} accounts. ${message}`.trim()
                                 }
                             }), { status: res.status, headers: { 'Content-Type': 'application/json' } });
                         }
                         if (res.status === 429) {
                             markRateLimited(account.alias, pluginConfig.rateLimitCooldownMs);
-                            // Try another account
-                            const retryRotation = await getNextAccount(pluginConfig);
+                            const retryRotation = await getNextAccount(pluginConfig, { authType });
                             if (retryRotation && retryRotation.account.alias !== account.alias) {
                                 return customFetch(input, init);
                             }
-                            // All accounts exhausted
                             const errorData = await res.json().catch(() => ({}));
                             return new Response(JSON.stringify({
                                 error: {
-                                    message: `[multi-auth][acc=${account.alias}] Rate limited on all accounts. ${errorData.error?.message || ''}`
+                                    message: `[multi-auth][acc=${account.alias}] Rate limited on all ${authType} accounts. ${errorData.error?.message || ''}`
                                 }
                             }), { status: 429, headers: { 'Content-Type': 'application/json' } });
                         }
-                        if (res.status === 402) {
+                        if (authType === 'oauth' && res.status === 402) {
                             // Some accounts can temporarily be in a deactivated workspace state.
                             // Rotate to the next account instead of hard-failing the request.
                             const errorData = await res.clone().json().catch(() => null);
@@ -619,7 +649,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                                 markWorkspaceDeactivated(account.alias, pluginConfig.workspaceDeactivatedCooldownMs, {
                                     error: message || code
                                 });
-                                const retryRotation = await getNextAccount(pluginConfig);
+                                const retryRotation = await getNextAccount(pluginConfig, { authType: 'oauth' });
                                 if (retryRotation && retryRotation.account.alias !== account.alias) {
                                     return customFetch(input, init);
                                 }
@@ -630,7 +660,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                                 }), { status: 402, headers: { 'Content-Type': 'application/json' } });
                             }
                         }
-                        if (res.status === 400) {
+                        if (authType === 'oauth' && res.status === 400) {
                             // Some accounts get staged access to newer Codex models (e.g. gpt-5.3-codex).
                             // If the backend says the model isn't supported for this account, temporarily
                             // skip it instead of trapping the whole rotation on a permanent 400 loop.
@@ -647,7 +677,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                                     model: normalizedModel,
                                     error: message
                                 });
-                                const retryRotation = await getNextAccount(pluginConfig);
+                                const retryRotation = await getNextAccount(pluginConfig, { authType: 'oauth' });
                                 if (retryRotation && retryRotation.account.alias !== account.alias) {
                                     return customFetch(input, init);
                                 }
@@ -673,8 +703,8 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                 };
                 // Return SDK configuration with custom fetch for rotation
                 return {
-                    apiKey: 'chatgpt-oauth',
-                    baseURL: CODEX_BASE_URL,
+                    apiKey: 'multi-auth-router',
+                    baseURL: OPENAI_API_BASE_URL,
                     fetch: customFetch
                 };
             },
@@ -703,6 +733,9 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                             callback: async () => {
                                 try {
                                     const account = await loginAccount(alias, flow);
+                                    if (!account.refreshToken || !account.accessToken || !account.expiresAt) {
+                                        return { type: 'failed' };
+                                    }
                                     return {
                                         type: 'success',
                                         provider: PROVIDER_ID,
@@ -719,7 +752,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                     }
                 },
                 {
-                    label: 'Skip (use existing accounts)',
+                    label: 'Manually enter API Key (auto-import)',
                     type: 'api'
                 }
             ]

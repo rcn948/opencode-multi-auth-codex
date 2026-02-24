@@ -1,10 +1,17 @@
 import { getStoreDiagnostics, loadStore, saveStore, updateAccount } from './store.js'
 import { ensureValidToken } from './auth.js'
-import type { AccountCredentials, DEFAULT_CONFIG } from './types.js'
+import {
+  isApiAccount,
+  isOauthAccount,
+  type AccountAuthType,
+  type AccountCredentials,
+  type PluginConfig
+} from './types.js'
 
 export interface RotationResult {
   account: AccountCredentials
-  token: string
+  credential: string
+  authType: AccountAuthType
 }
 
 function shuffled<T>(input: T[]): T[] {
@@ -17,7 +24,8 @@ function shuffled<T>(input: T[]): T[] {
 }
 
 export async function getNextAccount(
-  config: typeof DEFAULT_CONFIG
+  config: Pick<PluginConfig, 'rotationStrategy'>,
+  options?: { authType?: AccountAuthType }
 ): Promise<RotationResult | null> {
   let store = loadStore()
   const aliases = Object.keys(store.accounts)
@@ -25,8 +33,11 @@ export async function getNextAccount(
   if (aliases.length === 0) {
     const diag = getStoreDiagnostics()
     const extra = diag.error ? ` (${diag.error})` : ''
+    const addCommand = options?.authType === 'api'
+      ? 'opencode-multi-auth add-api <alias>'
+      : 'opencode-multi-auth add <alias>'
     console.error(
-      `[multi-auth] No accounts configured. Run: opencode-multi-auth add <alias>${extra}`
+      `[multi-auth] No accounts configured. Run: ${addCommand}${extra}`
     )
     if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
       console.error(`[multi-auth] store file: ${diag.storeFile}`)
@@ -37,6 +48,7 @@ export async function getNextAccount(
   const now = Date.now()
   const availableAliases = aliases.filter(alias => {
     const acc = store.accounts[alias]
+    if (options?.authType && acc.authType !== options.authType) return false
     const notRateLimited = !acc.rateLimitedUntil || acc.rateLimitedUntil < now
     const notModelUnsupported =
       !acc.modelUnsupportedUntil || acc.modelUnsupportedUntil < now
@@ -94,13 +106,27 @@ export async function getNextAccount(
   const { aliases: candidates, nextIndex } = buildCandidates()
 
   for (const candidate of candidates) {
-    const token = await ensureValidToken(candidate)
-    if (!token) {
+    const current = store.accounts[candidate]
+    let credential: string | null = null
+    let credentialType: AccountAuthType | null = null
+
+    if (isOauthAccount(current)) {
+      credentialType = 'oauth'
+      credential = await ensureValidToken(candidate)
+    } else if (isApiAccount(current)) {
+      credentialType = 'api'
+      credential = current.apiKey
+    }
+
+    if (!credential || !credentialType) {
       // Don't hard-fail the whole system on a single broken account.
       // Put it on a short cooldown so rotation can keep working.
+      const reason = current?.authType === 'api'
+        ? '[multi-auth] API key unavailable for account'
+        : '[multi-auth] Token unavailable (refresh failed?)'
       store = updateAccount(candidate, {
         rateLimitedUntil: now + tokenFailureCooldownMs,
-        limitError: '[multi-auth] Token unavailable (refresh failed?)',
+        limitError: reason,
         lastLimitErrorAt: now
       })
       continue
@@ -119,7 +145,11 @@ export async function getNextAccount(
     }
     saveStore(store)
 
-    return { account: store.accounts[candidate], token }
+    return {
+      account: store.accounts[candidate],
+      credential,
+      authType: credentialType
+    }
   }
 
   console.error('[multi-auth] No available accounts (token refresh failed on all candidates).')

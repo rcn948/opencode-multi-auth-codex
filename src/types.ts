@@ -1,11 +1,15 @@
 // Account credentials stored locally
+export type AccountAuthType = 'oauth' | 'api'
+
 export interface AccountCredentials {
   alias: string
-  accessToken: string
-  refreshToken: string
+  authType: AccountAuthType
+  accessToken?: string
+  refreshToken?: string
   idToken?: string
   accountId?: string
-  expiresAt: number // Unix timestamp
+  expiresAt?: number // Unix timestamp
+  apiKey?: string
   email?: string
   lastRefresh?: string
   lastSeenAt?: number
@@ -35,6 +39,41 @@ export interface AccountCredentials {
   tags?: string[]
   notes?: string
   source?: 'opencode' | 'codex'
+}
+
+export type OAuthAccountCredentials = AccountCredentials & {
+  authType: 'oauth'
+  accessToken: string
+  refreshToken: string
+  expiresAt: number
+}
+
+export type ApiAccountCredentials = AccountCredentials & {
+  authType: 'api'
+  apiKey: string
+}
+
+export function isOauthAccount(
+  account: AccountCredentials | null | undefined
+): account is OAuthAccountCredentials {
+  return Boolean(
+    account &&
+      account.authType === 'oauth' &&
+      typeof account.accessToken === 'string' &&
+      typeof account.refreshToken === 'string' &&
+      typeof account.expiresAt === 'number'
+  )
+}
+
+export function isApiAccount(
+  account: AccountCredentials | null | undefined
+): account is ApiAccountCredentials {
+  return Boolean(
+    account &&
+      account.authType === 'api' &&
+      typeof account.apiKey === 'string' &&
+      account.apiKey.length > 0
+  )
 }
 
 export interface RateLimitWindow {

@@ -1,4 +1,4 @@
-import type { AccountCredentials } from './types.js';
+import { type AccountCredentials } from './types.js';
 interface AuthorizationFlow {
     pkce: {
         verifier: string;

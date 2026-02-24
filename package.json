@@ -1,5 +1,5 @@
 {
-  "name": "@guard22/opencode-multi-auth-codex",
+  "name": "@dredivaris/opencode-multi-auth-codex",
   "version": "1.0.10",
   "description": "Multi-account OAuth rotation for OpenAI Codex with auto model discovery",
   "type": "module",
@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test dist/tests/*.test.js",
     "clean": "rm -rf dist",
     "web": "node ./dist/cli.js web --port 3434 --host 127.0.0.1"
   },
@@ -30,7 +31,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/guard22/opencode-multi-auth-codex"
+    "url": "https://github.com/dredivaris/opencode-multi-auth-codex"
   },
   "keywords": [
     "opencode",

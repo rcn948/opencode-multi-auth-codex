@@ -1,9 +1,12 @@
-import type { AccountCredentials, DEFAULT_CONFIG } from './types.js';
+import { type AccountAuthType, type AccountCredentials, type PluginConfig } from './types.js';
 export interface RotationResult {
     account: AccountCredentials;
-    token: string;
+    credential: string;
+    authType: AccountAuthType;
 }
-export declare function getNextAccount(config: typeof DEFAULT_CONFIG): Promise<RotationResult | null>;
+export declare function getNextAccount(config: Pick<PluginConfig, 'rotationStrategy'>, options?: {
+    authType?: AccountAuthType;
+}): Promise<RotationResult | null>;
 export declare function markRateLimited(alias: string, cooldownMs: number): void;
 export declare function clearRateLimit(alias: string): void;
 export declare function markModelUnsupported(alias: string, cooldownMs: number, info?: {
