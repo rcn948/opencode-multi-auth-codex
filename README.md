@@ -2,6 +2,8 @@
 
 Multi-account auth rotation for OpenAI in OpenCode. Supports both ChatGPT OAuth (Codex backend) and OpenAI API keys.
 
+For a step-by-step setup walkthrough, see `MIXED_AUTH_USAGE_GUIDE.md`.
+
 > **Based on [opencode-openai-codex-auth](https://github.com/numman-ali/opencode-openai-codex-auth) by [@nummanali](https://x.com/nummanali)**. Forked and modified to add multi-account rotation support.
 
 ## Patched Build (Codex Backend Compatible)
@@ -312,7 +314,7 @@ Fix:
 | **Routing** | Codex models use OAuth pool; non-Codex OpenAI models use API-key pool |
 | **Rate Limits** | Auto-skips rate-limited account for 5 min, uses next |
 | **Token Refresh** | Auto-refreshes tokens before expiry |
-| **Models** | Auto-discovers GPT-5.x models from OpenAI API |
+| **Models** | Supports Codex model mapping and standard OpenAI models |
 | **Storage** | `~/.config/opencode-multi-auth/accounts.json` |
 
 ## CLI Commands
@@ -331,8 +333,10 @@ Fix:
 
 ## Requirements
 
-- ChatGPT Plus/Pro subscription(s)
 - OpenCode CLI
+- At least one auth source:
+  - ChatGPT Plus/Pro account(s) for OAuth/Codex flow, and/or
+  - OpenAI API key account(s) for API-key flow
 
 ## Credits
 
