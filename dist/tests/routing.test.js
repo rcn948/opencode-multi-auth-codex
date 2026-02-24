@@ -9,6 +9,14 @@ test('selectAuthTypeForRequest routes non-codex models to api', () => {
     assert.equal(selectAuthTypeForRequest('gpt-5.2'), 'api');
     assert.equal(selectAuthTypeForRequest('gpt-4.1'), 'api');
 });
+test('selectAuthTypeForRequest handles object model payloads', () => {
+    assert.equal(selectAuthTypeForRequest({ model: 'gpt-5.3-codex' }), 'oauth');
+    assert.equal(selectAuthTypeForRequest({ id: 'gpt-5.2' }), 'api');
+});
+test('selectAuthTypeForRequest handles unexpected model shapes', () => {
+    assert.equal(selectAuthTypeForRequest({}), 'api');
+    assert.equal(selectAuthTypeForRequest(123), 'api');
+});
 test('selectAuthTypeForRequest can infer oauth from codex URL path', () => {
     assert.equal(selectAuthTypeForRequest(undefined, 'https://chatgpt.com/backend-api/codex/responses'), 'oauth');
 });

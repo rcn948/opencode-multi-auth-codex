@@ -113,10 +113,22 @@ function filterInput(input: unknown): unknown {
     })
 }
 
-function normalizeModel(model: string | undefined): string | undefined {
-  if (!model) return undefined
+function extractModelName(model: unknown): string | undefined {
+  if (typeof model === 'string' && model.trim()) return model
+  if (!model || typeof model !== 'object') return undefined
 
-  const modelId = model.includes('/') ? model.split('/').pop()! : model
+  const candidate = model as Record<string, unknown>
+  if (typeof candidate.id === 'string' && candidate.id.trim()) return candidate.id
+  if (typeof candidate.model === 'string' && candidate.model.trim()) return candidate.model
+  if (typeof candidate.name === 'string' && candidate.name.trim()) return candidate.name
+  return undefined
+}
+
+function normalizeModel(model: unknown): string | undefined {
+  const raw = extractModelName(model)
+  if (!raw) return undefined
+
+  const modelId = raw.includes('/') ? raw.split('/').pop()! : raw
   const baseModel = modelId.replace(/-(?:none|low|medium|high|xhigh)$/, '')
 
   // OpenCode currently allowlists gpt-5.2-codex, but we can route it to the latest
@@ -141,10 +153,11 @@ function normalizeModel(model: string | undefined): string | undefined {
 }
 
 export function selectAuthTypeForRequest(
-  model: string | undefined,
+  model: unknown,
   requestUrl?: string
 ): AccountAuthType {
-  const modelId = model?.includes('/') ? model.split('/').pop() : model
+  const raw = extractModelName(model)
+  const modelId = raw?.includes('/') ? raw.split('/').pop() : raw
   const baseModel = modelId?.replace(/-(?:none|low|medium|high|xhigh)$/, '') || ''
   if (baseModel.includes('codex')) return 'oauth'
   if (requestUrl && requestUrl.includes('/codex/')) return 'oauth'
@@ -589,7 +602,8 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
           const { account, credential } = rotation
           const isStreaming = body?.stream === true
           const normalizedModel = normalizeModel(body.model)
-          const reasoningMatch = body.model?.match(/-(none|low|medium|high|xhigh)$/)
+          const rawModel = extractModelName(body.model)
+          const reasoningMatch = rawModel?.match(/-(none|low|medium|high|xhigh)$/)
 
           const payload: Record<string, any> = {
             ...body,

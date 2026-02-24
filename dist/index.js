@@ -104,10 +104,25 @@ function filterInput(input) {
         return item;
     });
 }
-function normalizeModel(model) {
-    if (!model)
+function extractModelName(model) {
+    if (typeof model === 'string' && model.trim())
+        return model;
+    if (!model || typeof model !== 'object')
         return undefined;
-    const modelId = model.includes('/') ? model.split('/').pop() : model;
+    const candidate = model;
+    if (typeof candidate.id === 'string' && candidate.id.trim())
+        return candidate.id;
+    if (typeof candidate.model === 'string' && candidate.model.trim())
+        return candidate.model;
+    if (typeof candidate.name === 'string' && candidate.name.trim())
+        return candidate.name;
+    return undefined;
+}
+function normalizeModel(model) {
+    const raw = extractModelName(model);
+    if (!raw)
+        return undefined;
+    const modelId = raw.includes('/') ? raw.split('/').pop() : raw;
     const baseModel = modelId.replace(/-(?:none|low|medium|high|xhigh)$/, '');
     // OpenCode currently allowlists gpt-5.2-codex, but we can route it to the latest
     // Codex model on the ChatGPT backend for users who want the newest model without
@@ -124,7 +139,8 @@ function normalizeModel(model) {
     return baseModel;
 }
 export function selectAuthTypeForRequest(model, requestUrl) {
-    const modelId = model?.includes('/') ? model.split('/').pop() : model;
+    const raw = extractModelName(model);
+    const modelId = raw?.includes('/') ? raw.split('/').pop() : raw;
     const baseModel = modelId?.replace(/-(?:none|low|medium|high|xhigh)$/, '') || '';
     if (baseModel.includes('codex'))
         return 'oauth';
@@ -525,7 +541,8 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                     const { account, credential } = rotation;
                     const isStreaming = body?.stream === true;
                     const normalizedModel = normalizeModel(body.model);
-                    const reasoningMatch = body.model?.match(/-(none|low|medium|high|xhigh)$/);
+                    const rawModel = extractModelName(body.model);
+                    const reasoningMatch = rawModel?.match(/-(none|low|medium|high|xhigh)$/);
                     const payload = {
                         ...body,
                         ...(normalizedModel ? { model: normalizedModel } : {}),
