@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { selectAuthTypeForRequest } from '../index.js';
+import { selectAuthTypeForRequest, toCodexBackendUrl } from '../index.js';
 test('selectAuthTypeForRequest routes codex models to oauth', () => {
     assert.equal(selectAuthTypeForRequest('gpt-5.3-codex'), 'oauth');
     assert.equal(selectAuthTypeForRequest('openai/gpt-5.2-codex-high'), 'oauth');
@@ -21,5 +21,10 @@ test('selectAuthTypeForRequest handles unexpected model shapes', () => {
 });
 test('selectAuthTypeForRequest can infer oauth from codex URL path', () => {
     assert.equal(selectAuthTypeForRequest(undefined, 'https://chatgpt.com/backend-api/codex/responses'), 'oauth');
+});
+test('toCodexBackendUrl always targets backend-api responses endpoint', () => {
+    assert.equal(toCodexBackendUrl('https://api.openai.com/v1/responses'), 'https://chatgpt.com/backend-api/codex/responses');
+    assert.equal(toCodexBackendUrl('https://api.openai.com/v1/chat/completions'), 'https://chatgpt.com/backend-api/codex/chat/completions');
+    assert.equal(toCodexBackendUrl('https://chatgpt.com/backend-api/codex/responses?stream=true'), 'https://chatgpt.com/backend-api/codex/responses?stream=true');
 });
 //# sourceMappingURL=routing.test.js.map

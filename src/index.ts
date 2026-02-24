@@ -19,7 +19,8 @@ import { listAccounts, updateAccount } from './store.js'
 import { type AccountAuthType, DEFAULT_CONFIG, type PluginConfig } from './types.js'
 
 const PROVIDER_ID = 'openai'
-const CODEX_BASE_URL = 'https://chatgpt.com/backend-api'
+const CODEX_ORIGIN = 'https://chatgpt.com'
+const CODEX_BACKEND_PREFIX = '/backend-api'
 const OPENAI_API_BASE_URL = 'https://api.openai.com/v1'
 const REDIRECT_PORT = 1455
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/auth/callback`
@@ -134,11 +135,11 @@ function extractPathAndSearch(url: string): string {
   return trimmed
 }
 
-function toCodexBackendUrl(originalUrl: string): string {
+export function toCodexBackendUrl(originalUrl: string): string {
   const pathAndSearch = extractPathAndSearch(originalUrl)
   const [pathname, search = ''] = pathAndSearch.split('?')
 
-  let mappedPath = pathname
+  let mappedPath = pathname.startsWith('/') ? pathname : `/${pathname}`
   if (mappedPath === '/v1/responses') {
     mappedPath = '/codex/responses'
   } else if (mappedPath === '/responses') {
@@ -149,8 +150,12 @@ function toCodexBackendUrl(originalUrl: string): string {
     mappedPath = '/codex/chat/completions'
   }
 
+  if (!mappedPath.startsWith(`${CODEX_BACKEND_PREFIX}/`)) {
+    mappedPath = `${CODEX_BACKEND_PREFIX}${mappedPath}`
+  }
+
   const mapped = search ? `${mappedPath}?${search}` : mappedPath
-  return new URL(mapped, CODEX_BASE_URL).toString()
+  return new URL(mapped, CODEX_ORIGIN).toString()
 }
 
 function filterInput(input: unknown): unknown {
