@@ -29,6 +29,31 @@ const OPENAI_HEADER_VALUES = {
 };
 const JWT_CLAIM_PATH = 'https://api.openai.com/auth';
 let pluginConfig = { ...DEFAULT_CONFIG };
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function parseRetryAfterMs(headers) {
+    const retryAfterMs = headers.get('retry-after-ms');
+    if (retryAfterMs) {
+        const parsed = Number.parseFloat(retryAfterMs);
+        if (Number.isFinite(parsed) && parsed > 0)
+            return Math.ceil(parsed);
+    }
+    const retryAfter = headers.get('retry-after');
+    if (!retryAfter)
+        return null;
+    const seconds = Number.parseFloat(retryAfter);
+    if (Number.isFinite(seconds) && seconds > 0) {
+        return Math.ceil(seconds * 1000);
+    }
+    const dateMs = Date.parse(retryAfter);
+    if (!Number.isNaN(dateMs)) {
+        const delta = dateMs - Date.now();
+        if (delta > 0)
+            return Math.ceil(delta);
+    }
+    return null;
+}
 function opencodeModelsPath() {
     const override = process.env.OPENCODE_MODELS_PATH;
     if (override && override.trim())
@@ -551,7 +576,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                     return {};
                 }
                 // Custom fetch with multi-account rotation
-                const customFetch = async (input, init) => {
+                const customFetch = async (input, init, local429RetryAttempt = 0) => {
                     await syncAuthFromOpenCode(getAuth);
                     const originalUrl = extractRequestUrl(input);
                     const method = resolveRequestMethod(input, init);
@@ -715,7 +740,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                             }
                             const retryRotation = await getNextAccount(pluginConfig, { authType: resolvedAuthType });
                             if (retryRotation && retryRotation.account.alias !== account.alias) {
-                                return customFetch(input, init);
+                                return customFetch(input, init, local429RetryAttempt);
                             }
                             return new Response(JSON.stringify({
                                 error: {
@@ -727,7 +752,34 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                             markRateLimited(account.alias, pluginConfig.rateLimitCooldownMs);
                             const retryRotation = await getNextAccount(pluginConfig, { authType: resolvedAuthType });
                             if (retryRotation && retryRotation.account.alias !== account.alias) {
-                                return customFetch(input, init);
+                                return customFetch(input, init, local429RetryAttempt);
+                            }
+                            const local429RetriesRaw = process.env.OPENCODE_MULTI_AUTH_LOCAL_429_RETRIES || '2';
+                            const local429Retries = Number.parseInt(local429RetriesRaw, 10);
+                            const maxLocal429Retries = Number.isFinite(local429Retries) && local429Retries >= 0
+                                ? local429Retries
+                                : 2;
+                            if (local429RetryAttempt < maxLocal429Retries) {
+                                const retryAfterMs = parseRetryAfterMs(res.headers);
+                                const fallback = Math.min(pluginConfig.rateLimitCooldownMs, 10_000);
+                                const waitMs = Math.max(500, Math.min(retryAfterMs ?? fallback, 60_000));
+                                if (shouldThrottle(`toast:429:${account.alias}:${local429RetryAttempt}`, 2000)) {
+                                    // noop
+                                }
+                                else {
+                                    client.tui
+                                        .showToast({
+                                        body: {
+                                            title: 'Rate limit',
+                                            message: `All ${resolvedAuthType.toUpperCase()} accounts cooling down. Retrying in ${Math.round(waitMs / 1000)}s...`,
+                                            variant: 'warning',
+                                            duration: Math.min(waitMs + 1000, 15000)
+                                        }
+                                    })
+                                        .catch(() => { });
+                                }
+                                await sleep(waitMs);
+                                return customFetch(input, init, local429RetryAttempt + 1);
                             }
                             const errorData = await res.json().catch(() => ({}));
                             return new Response(JSON.stringify({
@@ -759,7 +811,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                                 });
                                 const retryRotation = await getNextAccount(pluginConfig, { authType: 'oauth' });
                                 if (retryRotation && retryRotation.account.alias !== account.alias) {
-                                    return customFetch(input, init);
+                                    return customFetch(input, init, local429RetryAttempt);
                                 }
                                 return new Response(JSON.stringify({
                                     error: {
@@ -787,7 +839,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                                 });
                                 const retryRotation = await getNextAccount(pluginConfig, { authType: 'oauth' });
                                 if (retryRotation && retryRotation.account.alias !== account.alias) {
-                                    return customFetch(input, init);
+                                    return customFetch(input, init, local429RetryAttempt);
                                 }
                                 return new Response(JSON.stringify({
                                     error: {
