@@ -103,5 +103,27 @@ test('rewriteOpenAIModelsForRouting creates API and OAuth aliases for dual model
   assert.equal(rewritten['gpt-5.2-oauth'].id, 'gpt-5.2')
   assert.equal(rewritten['gpt-5.2-api'].options?.opencodeMultiAuthRoute, 'api')
   assert.equal(rewritten['gpt-5.2-oauth'].options?.opencodeMultiAuthRoute, 'oauth')
-  assert.equal(rewritten['gpt-5.2-codex'].name, 'GPT 5.2 Codex (OAuth)')
+  assert.ok(rewritten['gpt-5.2-codex-api'])
+  assert.ok(rewritten['gpt-5.2-codex-oauth'])
+  assert.equal(rewritten['gpt-5.2-codex-api'].name, 'GPT 5.2 Codex (API)')
+  assert.equal(rewritten['gpt-5.2-codex-oauth'].name, 'GPT 5.2 Codex (OAuth)')
+  assert.equal(rewritten['gpt-5.2-codex-api'].options?.opencodeMultiAuthRoute, 'api')
+  assert.equal(rewritten['gpt-5.2-codex-oauth'].options?.opencodeMultiAuthRoute, 'oauth')
+})
+
+test('rewriteOpenAIModelsForRouting is stable for already routed dual model maps', () => {
+  const rewritten = rewriteOpenAIModelsForRouting({
+    'gpt-5.2-api': {
+      id: 'gpt-5.2',
+      name: 'GPT 5.2 (API)',
+      options: { opencodeMultiAuthRoute: 'api' }
+    },
+    'gpt-5.2-oauth': {
+      id: 'gpt-5.2',
+      name: 'GPT 5.2 (OAuth)',
+      options: { opencodeMultiAuthRoute: 'oauth' }
+    }
+  })
+
+  assert.deepEqual(Object.keys(rewritten).sort(), ['gpt-5.2-api', 'gpt-5.2-oauth'])
 })

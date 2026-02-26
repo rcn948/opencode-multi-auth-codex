@@ -186,15 +186,23 @@ function addModel(out, key, value) {
 }
 export function rewriteOpenAIModelsForRouting(models) {
     const out = {};
+    const expandedModelIDs = new Set();
     for (const [key, rawModel] of Object.entries(models)) {
         const model = rawModel && typeof rawModel === 'object' ? rawModel : {};
         const apiID = providerModelID(key, model);
         const cleanName = stripAuthLabel(typeof model.name === 'string' ? model.name : apiID);
         if (apiID.toLowerCase().includes('codex')) {
-            addModel(out, key, withLabeledRoute(model, apiID, `${cleanName} (OAuth)`, 'oauth'));
+            if (expandedModelIDs.has(apiID))
+                continue;
+            expandedModelIDs.add(apiID);
+            addModel(out, `${apiID}-api`, withLabeledRoute(model, apiID, `${cleanName} (API)`, 'api'));
+            addModel(out, `${apiID}-oauth`, withLabeledRoute(model, apiID, `${cleanName} (OAuth)`, 'oauth'));
             continue;
         }
         if (shouldDualRouteModel(apiID)) {
+            if (expandedModelIDs.has(apiID))
+                continue;
+            expandedModelIDs.add(apiID);
             addModel(out, `${apiID}-api`, withLabeledRoute(model, apiID, `${cleanName} (API)`, 'api'));
             addModel(out, `${apiID}-oauth`, withLabeledRoute(model, apiID, `${cleanName} (OAuth)`, 'oauth'));
             continue;

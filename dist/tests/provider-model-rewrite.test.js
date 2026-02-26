@@ -87,7 +87,54 @@ test('auth loader rewrites provider models in place with API/OAuth labels', asyn
         assert.ok(provider.models['gpt-5.2-oauth']);
         assert.equal(provider.models['gpt-5.2-api'].options?.opencodeMultiAuthRoute, 'api');
         assert.equal(provider.models['gpt-5.2-oauth'].options?.opencodeMultiAuthRoute, 'oauth');
-        assert.equal(provider.models['gpt-5.2-codex'].name, 'GPT 5.2 Codex (OAuth)');
+        assert.ok(provider.models['gpt-5.2-codex-api']);
+        assert.ok(provider.models['gpt-5.2-codex-oauth']);
+        assert.equal(provider.models['gpt-5.2-codex-api'].name, 'GPT 5.2 Codex (API)');
+        assert.equal(provider.models['gpt-5.2-codex-oauth'].name, 'GPT 5.2 Codex (OAuth)');
+        assert.equal(provider.models['gpt-5.2-codex-api'].options?.opencodeMultiAuthRoute, 'api');
+        assert.equal(provider.models['gpt-5.2-codex-oauth'].options?.opencodeMultiAuthRoute, 'oauth');
+    }
+    finally {
+        env.cleanup();
+    }
+});
+test('config hook upgrades plain codex model selection to oauth-labeled entry', async () => {
+    const env = setupEnv();
+    try {
+        const plugin = await MultiAuthPlugin({
+            client: {
+                session: {
+                    async get() {
+                        return { data: {} };
+                    }
+                },
+                tui: {
+                    async showToast() {
+                        return;
+                    }
+                }
+            },
+            $: null,
+            serverUrl: new URL('http://localhost:4096'),
+            project: { id: 'project-test', name: 'Project Test' },
+            directory: process.cwd(),
+            worktree: process.cwd()
+        });
+        assert.ok(plugin.config);
+        const config = {
+            model: 'openai/gpt-5.2-codex',
+            provider: {
+                openai: {
+                    models: {
+                        'gpt-5.2-codex': { id: 'gpt-5.2-codex', name: 'GPT 5.2 Codex' }
+                    }
+                }
+            }
+        };
+        await plugin.config(config);
+        assert.equal(config.model, 'openai/gpt-5.2-codex-oauth');
+        assert.ok(config.provider.openai.models['gpt-5.2-codex-api']);
+        assert.ok(config.provider.openai.models['gpt-5.2-codex-oauth']);
     }
     finally {
         env.cleanup();

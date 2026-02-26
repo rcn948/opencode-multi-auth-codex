@@ -194,6 +194,7 @@ export function rewriteOpenAIModelsForRouting(
   models: Record<string, ProviderModelConfig>
 ): Record<string, ProviderModelConfig> {
   const out: Record<string, ProviderModelConfig> = {}
+  const expandedModelIDs = new Set<string>()
 
   for (const [key, rawModel] of Object.entries(models)) {
     const model = rawModel && typeof rawModel === 'object' ? rawModel : {}
@@ -201,11 +202,16 @@ export function rewriteOpenAIModelsForRouting(
     const cleanName = stripAuthLabel(typeof model.name === 'string' ? model.name : apiID)
 
     if (apiID.toLowerCase().includes('codex')) {
-      addModel(out, key, withLabeledRoute(model, apiID, `${cleanName} (OAuth)`, 'oauth'))
+      if (expandedModelIDs.has(apiID)) continue
+      expandedModelIDs.add(apiID)
+      addModel(out, `${apiID}-api`, withLabeledRoute(model, apiID, `${cleanName} (API)`, 'api'))
+      addModel(out, `${apiID}-oauth`, withLabeledRoute(model, apiID, `${cleanName} (OAuth)`, 'oauth'))
       continue
     }
 
     if (shouldDualRouteModel(apiID)) {
+      if (expandedModelIDs.has(apiID)) continue
+      expandedModelIDs.add(apiID)
       addModel(out, `${apiID}-api`, withLabeledRoute(model, apiID, `${cleanName} (API)`, 'api'))
       addModel(out, `${apiID}-oauth`, withLabeledRoute(model, apiID, `${cleanName} (OAuth)`, 'oauth'))
       continue

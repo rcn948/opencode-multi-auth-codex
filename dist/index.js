@@ -690,9 +690,21 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                 if (typeof selected === 'string' && selected.startsWith('openai/')) {
                     const selectedModel = selected.replace('openai/', '');
                     const explicit = selectedModel.endsWith('-oauth') || selectedModel.endsWith('-api');
-                    if (!explicit && !openai.models[selectedModel] && openai.models[`${selectedModel}-api`]) {
-                        ;
-                        config.model = `openai/${selectedModel}-api`;
+                    if (!explicit && !openai.models[selectedModel]) {
+                        const oauthKey = `${selectedModel}-oauth`;
+                        const apiKey = `${selectedModel}-api`;
+                        if (selectedModel.includes('codex') && openai.models[oauthKey]) {
+                            ;
+                            config.model = `openai/${oauthKey}`;
+                        }
+                        else if (openai.models[apiKey]) {
+                            ;
+                            config.model = `openai/${apiKey}`;
+                        }
+                        else if (openai.models[oauthKey]) {
+                            ;
+                            config.model = `openai/${oauthKey}`;
+                        }
                     }
                 }
                 if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
