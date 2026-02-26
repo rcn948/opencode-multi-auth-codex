@@ -106,6 +106,12 @@ export async function getNextAccount(
   }
 
   const now = Date.now()
+  const authInvalidRetryMs = (() => {
+    const raw = process.env.OPENCODE_MULTI_AUTH_AUTH_INVALID_RETRY_MS
+    const parsed = raw ? Number(raw) : NaN
+    if (Number.isFinite(parsed) && parsed > 0) return parsed
+    return 10 * 60_000
+  })()
   const availableAliases = aliases.filter(alias => {
     const acc = store.accounts[alias]
     if (options?.authType && acc.authType !== options.authType) return false
@@ -114,7 +120,9 @@ export async function getNextAccount(
       !acc.modelUnsupportedUntil || acc.modelUnsupportedUntil < now
     const notWorkspaceDeactivated =
       !acc.workspaceDeactivatedUntil || acc.workspaceDeactivatedUntil < now
-    const notInvalidated = !acc.authInvalid
+    const invalidatedAt = typeof acc.authInvalidatedAt === 'number' ? acc.authInvalidatedAt : 0
+    const invalidRetryReady = invalidatedAt > 0 && invalidatedAt + authInvalidRetryMs < now
+    const notInvalidated = !acc.authInvalid || invalidRetryReady
     return notRateLimited && notModelUnsupported && notWorkspaceDeactivated && notInvalidated
   })
 
@@ -205,7 +213,9 @@ export async function getNextAccount(
     store = updateAccount(candidate, {
       usageCount: (store.accounts[candidate]?.usageCount || 0) + 1,
       lastUsed: now,
-      limitError: undefined
+      limitError: undefined,
+      authInvalid: false,
+      authInvalidatedAt: undefined
     })
 
     store.activeAlias = candidate

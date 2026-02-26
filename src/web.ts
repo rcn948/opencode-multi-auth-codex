@@ -1314,10 +1314,72 @@ function remainingPercent(window?: RateLimitWindow): number | null {
   return Math.round((window.remaining / window.limit) * 100)
 }
 
+function isTemporarilyBlocked(account: AccountCredentials, now: number): boolean {
+  if (account.rateLimitedUntil && account.rateLimitedUntil > now) return true
+  if (account.modelUnsupportedUntil && account.modelUnsupportedUntil > now) return true
+  if (account.workspaceDeactivatedUntil && account.workspaceDeactivatedUntil > now) return true
+  return false
+}
+
+function oauthRecommendPriority(account: AccountCredentials): { bucket: number; resetAt: number } {
+  const windows = [account.rateLimits?.fiveHour, account.rateLimits?.weekly]
+  let hasWindow = false
+  let hasAvailable = false
+  let hasUnknown = false
+  let minResetAt = Number.POSITIVE_INFINITY
+
+  for (const window of windows) {
+    if (!window) continue
+    hasWindow = true
+
+    if (typeof window.remaining === 'number') {
+      if (window.remaining <= 0) continue
+      hasAvailable = true
+      if (typeof window.resetAt === 'number') {
+        minResetAt = Math.min(minResetAt, window.resetAt)
+      } else {
+        hasUnknown = true
+      }
+      continue
+    }
+
+    hasUnknown = true
+  }
+
+  if (hasAvailable && Number.isFinite(minResetAt)) {
+    return { bucket: 0, resetAt: minResetAt }
+  }
+  if (hasAvailable || hasUnknown) {
+    return { bucket: 1, resetAt: Number.POSITIVE_INFINITY }
+  }
+  if (!hasWindow) {
+    return { bucket: 2, resetAt: Number.POSITIVE_INFINITY }
+  }
+  return { bucket: 3, resetAt: Number.POSITIVE_INFINITY }
+}
+
 function recommendAlias(accounts: AccountCredentials[]): string | null {
-  let best: { alias: string; score: number } | null = null
   const now = Date.now()
+
+  const oauthCandidates = accounts.filter((account) =>
+    account.authType === 'oauth' && !account.authInvalid && !isTemporarilyBlocked(account, now)
+  )
+
+  if (oauthCandidates.length > 0) {
+    const ranked = [...oauthCandidates].sort((a, b) => {
+      const pa = oauthRecommendPriority(a)
+      const pb = oauthRecommendPriority(b)
+      if (pa.bucket !== pb.bucket) return pa.bucket - pb.bucket
+      if (pa.resetAt !== pb.resetAt) return pa.resetAt - pb.resetAt
+      return a.alias.localeCompare(b.alias)
+    })
+    return ranked[0]?.alias ?? null
+  }
+
+  let best: { alias: string; score: number } | null = null
   for (const account of accounts) {
+    if (account.authInvalid) continue
+    if (isTemporarilyBlocked(account, now)) continue
     const fiveRaw = remainingPercent(account.rateLimits?.fiveHour)
     const weeklyRaw = remainingPercent(account.rateLimits?.weekly)
     if (fiveRaw === null && weeklyRaw === null) {

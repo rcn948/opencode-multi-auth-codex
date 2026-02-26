@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getNextAccount } from '../rotation.js';
-import { addAccount, loadStore, saveStore } from '../store.js';
+import { addAccount, loadStore, saveStore, updateAccount } from '../store.js';
 function setupTempStore() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-multi-auth-rotation-priority-'));
     const storeFile = path.join(dir, 'accounts.json');
@@ -101,6 +101,38 @@ test('api rotation still follows configured strategy', async () => {
         assert.equal(next?.account.alias, 'api-b');
     }
     finally {
+        temp.cleanup();
+    }
+});
+test('invalid oauth accounts are retried after cooldown and auto-cleared when valid', async () => {
+    const temp = setupTempStore();
+    const prevRetry = process.env.OPENCODE_MULTI_AUTH_AUTH_INVALID_RETRY_MS;
+    process.env.OPENCODE_MULTI_AUTH_AUTH_INVALID_RETRY_MS = '1';
+    try {
+        const now = Date.now();
+        addAccount('oauth-invalid', {
+            authType: 'oauth',
+            accessToken: 'access-invalid',
+            refreshToken: 'refresh-invalid',
+            expiresAt: now + 24 * 3600 * 1000
+        });
+        updateAccount('oauth-invalid', {
+            authInvalid: true,
+            authInvalidatedAt: now - 10_000
+        });
+        const next = await getNextAccount({ rotationStrategy: 'round-robin' }, { authType: 'oauth' });
+        assert.equal(next?.account.alias, 'oauth-invalid');
+        const updated = loadStore().accounts['oauth-invalid'];
+        assert.equal(updated.authInvalid, false);
+        assert.equal(updated.authInvalidatedAt, undefined);
+    }
+    finally {
+        if (prevRetry === undefined) {
+            delete process.env.OPENCODE_MULTI_AUTH_AUTH_INVALID_RETRY_MS;
+        }
+        else {
+            process.env.OPENCODE_MULTI_AUTH_AUTH_INVALID_RETRY_MS = prevRetry;
+        }
         temp.cleanup();
     }
 });
