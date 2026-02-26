@@ -58,24 +58,36 @@ function opencodeModelsPath() {
     const override = process.env.OPENCODE_MODELS_PATH;
     if (override && override.trim())
         return override.trim();
-    return path.join(os.homedir(), '.local', 'share', 'opencode', 'models.json');
+    const xdgCacheHome = process.env.XDG_CACHE_HOME;
+    if (xdgCacheHome && xdgCacheHome.trim()) {
+        return path.join(xdgCacheHome.trim(), 'opencode', 'models.json');
+    }
+    return path.join(os.homedir(), '.cache', 'opencode', 'models.json');
 }
 function loadCachedOpenAIModels() {
-    const file = opencodeModelsPath();
-    if (!fs.existsSync(file))
-        return {};
-    try {
-        const raw = fs.readFileSync(file, 'utf-8');
-        const parsed = JSON.parse(raw);
-        const openai = parsed?.openai;
-        const models = openai?.models;
-        if (!models || typeof models !== 'object')
-            return {};
-        return models;
+    const primary = opencodeModelsPath();
+    const fallback = path.join(os.homedir(), '.local', 'share', 'opencode', 'models.json');
+    const candidates = primary === fallback ? [primary] : [primary, fallback];
+    for (const file of candidates) {
+        if (!fs.existsSync(file))
+            continue;
+        try {
+            const raw = fs.readFileSync(file, 'utf-8');
+            const parsed = JSON.parse(raw);
+            const openai = parsed?.openai;
+            const models = openai?.models;
+            if (!models || typeof models !== 'object')
+                continue;
+            if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
+                console.log(`[multi-auth] loaded openai models cache from ${file}`);
+            }
+            return models;
+        }
+        catch {
+            continue;
+        }
     }
-    catch {
-        return {};
-    }
+    return {};
 }
 function buildRouteModelSeed(existing) {
     const seed = { ...existing };

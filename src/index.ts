@@ -87,23 +87,37 @@ function parseRetryAfterMs(headers: Headers): number | null {
 function opencodeModelsPath(): string {
   const override = process.env.OPENCODE_MODELS_PATH
   if (override && override.trim()) return override.trim()
-  return path.join(os.homedir(), '.local', 'share', 'opencode', 'models.json')
+  const xdgCacheHome = process.env.XDG_CACHE_HOME
+  if (xdgCacheHome && xdgCacheHome.trim()) {
+    return path.join(xdgCacheHome.trim(), 'opencode', 'models.json')
+  }
+  return path.join(os.homedir(), '.cache', 'opencode', 'models.json')
 }
 
 function loadCachedOpenAIModels(): Record<string, ProviderModelConfig> {
-  const file = opencodeModelsPath()
-  if (!fs.existsSync(file)) return {}
+  const primary = opencodeModelsPath()
+  const fallback = path.join(os.homedir(), '.local', 'share', 'opencode', 'models.json')
+  const candidates = primary === fallback ? [primary] : [primary, fallback]
 
-  try {
-    const raw = fs.readFileSync(file, 'utf-8')
-    const parsed = JSON.parse(raw) as Record<string, any>
-    const openai = parsed?.openai
-    const models = openai?.models
-    if (!models || typeof models !== 'object') return {}
-    return models as Record<string, ProviderModelConfig>
-  } catch {
-    return {}
+  for (const file of candidates) {
+    if (!fs.existsSync(file)) continue
+
+    try {
+      const raw = fs.readFileSync(file, 'utf-8')
+      const parsed = JSON.parse(raw) as Record<string, any>
+      const openai = parsed?.openai
+      const models = openai?.models
+      if (!models || typeof models !== 'object') continue
+      if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
+        console.log(`[multi-auth] loaded openai models cache from ${file}`)
+      }
+      return models as Record<string, ProviderModelConfig>
+    } catch {
+      continue
+    }
   }
+
+  return {}
 }
 
 function buildRouteModelSeed(existing: Record<string, ProviderModelConfig>): Record<string, ProviderModelConfig> {
