@@ -23,6 +23,66 @@ function shuffled<T>(input: T[]): T[] {
   return a
 }
 
+type ResetPriority = {
+  bucket: number
+  resetAt: number
+}
+
+function oauthResetPriority(account: AccountCredentials, now: number): ResetPriority {
+  const windows = [account.rateLimits?.fiveHour, account.rateLimits?.weekly]
+  let hasWindow = false
+  let hasAvailable = false
+  let hasUnknown = false
+  let minResetAt = Number.POSITIVE_INFINITY
+
+  for (const window of windows) {
+    if (!window) continue
+    hasWindow = true
+
+    if (typeof window.remaining === 'number') {
+      if (window.remaining <= 0) continue
+      hasAvailable = true
+      if (typeof window.resetAt === 'number') {
+        minResetAt = Math.min(minResetAt, window.resetAt)
+      } else {
+        hasUnknown = true
+      }
+      continue
+    }
+
+    hasUnknown = true
+  }
+
+  if (hasAvailable && Number.isFinite(minResetAt)) {
+    return { bucket: 0, resetAt: minResetAt }
+  }
+
+  if (hasAvailable || hasUnknown) {
+    return { bucket: 1, resetAt: Number.POSITIVE_INFINITY }
+  }
+
+  if (!hasWindow) {
+    return { bucket: 2, resetAt: Number.POSITIVE_INFINITY }
+  }
+
+  return { bucket: 3, resetAt: Number.POSITIVE_INFINITY }
+}
+
+function prioritizeOauthAliases(
+  aliases: string[],
+  accounts: Record<string, AccountCredentials>,
+  now: number
+): string[] {
+  const index = new Map(aliases.map((alias, i) => [alias, i]))
+  return [...aliases].sort((a, b) => {
+    const pa = oauthResetPriority(accounts[a], now)
+    const pb = oauthResetPriority(accounts[b], now)
+    if (pa.bucket !== pb.bucket) return pa.bucket - pb.bucket
+    if (pa.resetAt !== pb.resetAt) return pa.resetAt - pb.resetAt
+    return (index.get(a) || 0) - (index.get(b) || 0)
+  })
+}
+
 export async function getNextAccount(
   config: Pick<PluginConfig, 'rotationStrategy'>,
   options?: { authType?: AccountAuthType }
@@ -71,6 +131,16 @@ export async function getNextAccount(
   })()
 
   const buildCandidates = (): { aliases: string[]; nextIndex?: (selected: string) => number } => {
+    const withOauthPriority = (
+      result: { aliases: string[]; nextIndex?: (selected: string) => number }
+    ): { aliases: string[]; nextIndex?: (selected: string) => number } => {
+      if (options?.authType !== 'oauth') return result
+      return {
+        ...result,
+        aliases: prioritizeOauthAliases(result.aliases, store.accounts, now)
+      }
+    }
+
     switch (config.rotationStrategy) {
       case 'least-used': {
         const sorted = [...availableAliases].sort((a, b) => {
@@ -82,10 +152,10 @@ export async function getNextAccount(
           if (lastDiff !== 0) return lastDiff
           return a.localeCompare(b)
         })
-        return { aliases: sorted }
+        return withOauthPriority({ aliases: sorted })
       }
       case 'random': {
-        return { aliases: shuffled(availableAliases) }
+        return withOauthPriority({ aliases: shuffled(availableAliases) })
       }
       case 'round-robin':
       default: {
@@ -98,7 +168,7 @@ export async function getNextAccount(
           if (idx < 0) return store.rotationIndex
           return (idx + 1) % availableAliases.length
         }
-        return { aliases: rr, nextIndex }
+        return withOauthPriority({ aliases: rr, nextIndex })
       }
     }
   }
