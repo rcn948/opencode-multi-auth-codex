@@ -127,3 +127,29 @@ test('rewriteOpenAIModelsForRouting is stable for already routed dual model maps
 
   assert.deepEqual(Object.keys(rewritten).sort(), ['gpt-5.2-api', 'gpt-5.2-oauth'])
 })
+
+test('rewriteOpenAIModelsForRouting collapses duplicate display labels', () => {
+  const rewritten = rewriteOpenAIModelsForRouting({
+    alpha: {
+      id: 'alpha',
+      name: 'Shared Model'
+    },
+    beta: {
+      id: 'beta',
+      name: 'Shared Model'
+    },
+    'alpha-codex': {
+      id: 'alpha-codex',
+      name: 'Shared Codex'
+    },
+    'beta-codex': {
+      id: 'beta-codex',
+      name: 'Shared Codex'
+    }
+  })
+
+  assert.deepEqual(Object.keys(rewritten).sort(), ['alpha', 'alpha-codex-api', 'alpha-codex-oauth'])
+  assert.equal(rewritten.alpha.name, 'Shared Model (API)')
+  assert.equal(rewritten['alpha-codex-api'].name, 'Shared Codex (API)')
+  assert.equal(rewritten['alpha-codex-oauth'].name, 'Shared Codex (OAuth)')
+})

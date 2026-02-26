@@ -171,7 +171,26 @@ function withLabeledRoute(model, apiID, name, route) {
         options: withRouteOption(model, route)
     };
 }
+function modelRoute(model) {
+    return resolveRouteHint(model?.options?.[ROUTE_HINT_OPTION]);
+}
+function isDuplicateDisplay(out, value) {
+    const name = typeof value?.name === 'string' ? value.name.trim() : '';
+    if (!name)
+        return false;
+    const route = modelRoute(value);
+    return Object.values(out).some((existing) => {
+        const existingName = typeof existing?.name === 'string' ? existing.name.trim() : '';
+        if (!existingName)
+            return false;
+        if (existingName !== name)
+            return false;
+        return modelRoute(existing) === route;
+    });
+}
 function addModel(out, key, value) {
+    if (isDuplicateDisplay(out, value))
+        return;
     if (!out[key]) {
         out[key] = value;
         return;

@@ -176,7 +176,28 @@ function withLabeledRoute(model: ProviderModelConfig, apiID: string, name: strin
   }
 }
 
+function modelRoute(model: ProviderModelConfig): AccountAuthType | null {
+  return resolveRouteHint(model?.options?.[ROUTE_HINT_OPTION])
+}
+
+function isDuplicateDisplay(
+  out: Record<string, ProviderModelConfig>,
+  value: ProviderModelConfig
+): boolean {
+  const name = typeof value?.name === 'string' ? value.name.trim() : ''
+  if (!name) return false
+  const route = modelRoute(value)
+
+  return Object.values(out).some((existing) => {
+    const existingName = typeof existing?.name === 'string' ? existing.name.trim() : ''
+    if (!existingName) return false
+    if (existingName !== name) return false
+    return modelRoute(existing) === route
+  })
+}
+
 function addModel(out: Record<string, ProviderModelConfig>, key: string, value: ProviderModelConfig): void {
+  if (isDuplicateDisplay(out, value)) return
   if (!out[key]) {
     out[key] = value
     return
