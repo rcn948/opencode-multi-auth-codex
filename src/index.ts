@@ -56,6 +56,24 @@ let pluginConfig: PluginConfig = { ...DEFAULT_CONFIG }
 
 type ProviderModelConfig = Record<string, any>
 
+type ModelsDevCost = {
+  input?: number
+  output?: number
+  cache_read?: number
+  cache_write?: number
+}
+
+type ModelsDevLimit = {
+  context?: number
+  input?: number
+  output?: number
+}
+
+type ModelsDevModalities = {
+  input?: string[]
+  output?: string[]
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -120,16 +138,152 @@ function loadCachedOpenAIModels(): Record<string, ProviderModelConfig> {
   return {}
 }
 
+function hasProviderModelShape(models: Record<string, ProviderModelConfig>): boolean {
+  return Object.values(models).some((model) => {
+    return Boolean(
+      model &&
+      typeof model === 'object' &&
+      model.api &&
+      typeof model.api === 'object' &&
+      typeof model.api.id === 'string'
+    )
+  })
+}
+
+function parseModelNumber(value: unknown, fallback = 0): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  return fallback
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === 'string')
+}
+
+function toProviderSeedModel(modelID: string, model: ProviderModelConfig): ProviderModelConfig {
+  const modalities = (model?.modalities || {}) as ModelsDevModalities
+  const limit = (model?.limit || {}) as ModelsDevLimit
+  const cost = (model?.cost || {}) as ModelsDevCost
+  const inputModalities = toStringArray(modalities.input)
+  const outputModalities = toStringArray(modalities.output)
+
+  return {
+    id: modelID,
+    providerID: PROVIDER_ID,
+    api: {
+      id: modelID,
+      url: typeof model?.provider?.api === 'string' ? model.provider.api : OPENAI_API_BASE_URL,
+      npm: typeof model?.provider?.npm === 'string' ? model.provider.npm : '@ai-sdk/openai'
+    },
+    status: typeof model?.status === 'string' ? model.status : 'active',
+    name: typeof model?.name === 'string' && model.name.trim() ? model.name : modelID,
+    capabilities: {
+      temperature: Boolean(model?.temperature),
+      reasoning: Boolean(model?.reasoning),
+      attachment: Boolean(model?.attachment),
+      toolcall: model?.tool_call !== false,
+      input: {
+        text: inputModalities.includes('text'),
+        audio: inputModalities.includes('audio'),
+        image: inputModalities.includes('image'),
+        video: inputModalities.includes('video'),
+        pdf: inputModalities.includes('pdf')
+      },
+      output: {
+        text: outputModalities.includes('text'),
+        audio: outputModalities.includes('audio'),
+        image: outputModalities.includes('image'),
+        video: outputModalities.includes('video'),
+        pdf: outputModalities.includes('pdf')
+      },
+      interleaved: model?.interleaved ?? false
+    },
+    cost: {
+      input: parseModelNumber(cost.input),
+      output: parseModelNumber(cost.output),
+      cache: {
+        read: parseModelNumber(cost.cache_read),
+        write: parseModelNumber(cost.cache_write)
+      }
+    },
+    options: model?.options && typeof model.options === 'object' ? model.options : {},
+    limit: {
+      context: parseModelNumber(limit.context),
+      input: parseModelNumber(limit.input),
+      output: parseModelNumber(limit.output)
+    },
+    headers: model?.headers && typeof model.headers === 'object' ? model.headers : {},
+    family: typeof model?.family === 'string' ? model.family : '',
+    release_date: typeof model?.release_date === 'string' ? model.release_date : '',
+    variants: model?.variants && typeof model.variants === 'object' ? model.variants : {}
+  }
+}
+
+function buildInjectedLatestModel(providerShape: boolean, latestModel: string): ProviderModelConfig {
+  if (providerShape) {
+    return {
+      id: latestModel,
+      providerID: PROVIDER_ID,
+      api: {
+        id: latestModel,
+        url: OPENAI_API_BASE_URL,
+        npm: '@ai-sdk/openai'
+      },
+      status: 'active',
+      name: 'GPT-5.3 Codex',
+      capabilities: {
+        temperature: true,
+        reasoning: true,
+        attachment: true,
+        toolcall: true,
+        input: { text: true, audio: false, image: true, video: false, pdf: false },
+        output: { text: true, audio: false, image: false, video: false, pdf: false },
+        interleaved: false
+      },
+      cost: {
+        input: 0,
+        output: 0,
+        cache: { read: 0, write: 0 }
+      },
+      options: {},
+      limit: {
+        context: 200000,
+        input: 200000,
+        output: 8192
+      },
+      headers: {},
+      family: 'gpt-codex',
+      release_date: '',
+      variants: {}
+    }
+  }
+
+  return {
+    id: latestModel,
+    name: 'GPT-5.3 Codex',
+    reasoning: true,
+    tool_call: true,
+    temperature: true,
+    limit: {
+      context: 200000,
+      output: 8192
+    }
+  }
+}
+
 function buildRouteModelSeed(existing: Record<string, ProviderModelConfig>): Record<string, ProviderModelConfig> {
   const seed: Record<string, ProviderModelConfig> = { ...existing }
   const cached = loadCachedOpenAIModels()
+  const providerShape = hasProviderModelShape(existing)
 
   for (const [modelID, model] of Object.entries(cached)) {
     if (seed[modelID]) continue
-    seed[modelID] = {
-      id: modelID,
-      name: typeof model?.name === 'string' && model.name.trim() ? model.name : modelID
-    }
+    seed[modelID] = providerShape
+      ? toProviderSeedModel(modelID, model)
+      : {
+          id: modelID,
+          name: typeof model?.name === 'string' && model.name.trim() ? model.name : modelID
+        }
   }
 
   return seed
@@ -137,27 +291,33 @@ function buildRouteModelSeed(existing: Record<string, ProviderModelConfig>): Rec
 
 function buildRoutedModelMap(existing: Record<string, ProviderModelConfig>): Record<string, ProviderModelConfig> {
   const seed = buildRouteModelSeed(existing)
+  const providerShape = hasProviderModelShape(existing)
 
   const injectModelsRaw = process.env.OPENCODE_MULTI_AUTH_INJECT_MODELS
   const injectModels = injectModelsRaw === '1' || injectModelsRaw === 'true'
   if (injectModels) {
     const latestModel = (process.env.OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL || 'gpt-5.3-codex').trim()
     if (!seed[latestModel]) {
-      seed[latestModel] = {
-        id: latestModel,
-        name: 'GPT-5.3 Codex',
-        reasoning: true,
-        tool_call: true,
-        temperature: true,
-        limit: {
-          context: 200000,
-          output: 8192
-        }
-      }
+      seed[latestModel] = buildInjectedLatestModel(providerShape, latestModel)
     }
   }
 
   return rewriteOpenAIModelsForRouting(seed)
+}
+
+function replaceModelMapInPlace(
+  target: Record<string, ProviderModelConfig>,
+  next: Record<string, ProviderModelConfig>
+): Record<string, ProviderModelConfig> {
+  for (const key of Object.keys(target)) {
+    delete target[key]
+  }
+
+  for (const [key, value] of Object.entries(next)) {
+    target[key] = value
+  }
+
+  return target
 }
 
 function configure(config: Partial<PluginConfig>): void {
@@ -625,7 +785,8 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
 	        if (!openai || typeof openai !== 'object') return
 	        openai.models ||= {}
 
-	        openai.models = buildRoutedModelMap(openai.models)
+	        const rewritten = buildRoutedModelMap(openai.models)
+	        openai.models = replaceModelMapInPlace(openai.models, rewritten)
 
 	        const selected = (config as any)?.model
 	        if (typeof selected === 'string' && selected.startsWith('openai/')) {
@@ -659,7 +820,8 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
         if (provider && typeof provider === 'object') {
           const models = (provider as any).models
           if (models && typeof models === 'object') {
-            ;(provider as any).models = buildRoutedModelMap(models)
+            const rewritten = buildRoutedModelMap(models)
+            ;(provider as any).models = replaceModelMapInPlace(models, rewritten)
           }
         }
 
