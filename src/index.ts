@@ -135,6 +135,31 @@ function buildRouteModelSeed(existing: Record<string, ProviderModelConfig>): Rec
   return seed
 }
 
+function buildRoutedModelMap(existing: Record<string, ProviderModelConfig>): Record<string, ProviderModelConfig> {
+  const seed = buildRouteModelSeed(existing)
+
+  const injectModelsRaw = process.env.OPENCODE_MULTI_AUTH_INJECT_MODELS
+  const injectModels = injectModelsRaw === '1' || injectModelsRaw === 'true'
+  if (injectModels) {
+    const latestModel = (process.env.OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL || 'gpt-5.3-codex').trim()
+    if (!seed[latestModel]) {
+      seed[latestModel] = {
+        id: latestModel,
+        name: 'GPT-5.3 Codex',
+        reasoning: true,
+        tool_call: true,
+        temperature: true,
+        limit: {
+          context: 200000,
+          output: 8192
+        }
+      }
+    }
+  }
+
+  return rewriteOpenAIModelsForRouting(seed)
+}
+
 function configure(config: Partial<PluginConfig>): void {
   pluginConfig = { ...pluginConfig, ...config }
 }
@@ -600,30 +625,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
 	        if (!openai || typeof openai !== 'object') return
 	        openai.models ||= {}
 
-	        const seed = buildRouteModelSeed(openai.models)
-
-	        const injectModelsRaw = process.env.OPENCODE_MULTI_AUTH_INJECT_MODELS
-	        const injectModels = injectModelsRaw === '1' || injectModelsRaw === 'true'
-	        if (injectModels) {
-	          const latestModel = (process.env.OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL || 'gpt-5.3-codex').trim()
-	          if (!seed[latestModel]) {
-	            seed[latestModel] = {
-	              id: latestModel,
-	              name: 'GPT-5.3 Codex',
-	              reasoning: true,
-	              tool_call: true,
-	              temperature: true,
-	              limit: {
-	                // Be conservative: upstream model metadata changes over time and
-	                // incorrect limits prevent OpenCode's compaction from triggering.
-	                context: 200000,
-	                output: 8192
-	              }
-	            }
-	          }
-	        }
-
-	        openai.models = rewriteOpenAIModelsForRouting(seed)
+	        openai.models = buildRoutedModelMap(openai.models)
 
 	        const selected = (config as any)?.model
 	        if (typeof selected === 'string' && selected.startsWith('openai/')) {
@@ -653,6 +655,14 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
        */
       async loader(getAuth, provider) {
         await syncAuthFromOpenCode(getAuth)
+
+        if (provider && typeof provider === 'object') {
+          const models = (provider as any).models
+          if (models && typeof models === 'object') {
+            ;(provider as any).models = buildRoutedModelMap(models)
+          }
+        }
+
         const accounts = listAccounts()
 
         if (accounts.length === 0) {

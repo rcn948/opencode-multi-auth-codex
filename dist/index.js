@@ -102,6 +102,28 @@ function buildRouteModelSeed(existing) {
     }
     return seed;
 }
+function buildRoutedModelMap(existing) {
+    const seed = buildRouteModelSeed(existing);
+    const injectModelsRaw = process.env.OPENCODE_MULTI_AUTH_INJECT_MODELS;
+    const injectModels = injectModelsRaw === '1' || injectModelsRaw === 'true';
+    if (injectModels) {
+        const latestModel = (process.env.OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL || 'gpt-5.3-codex').trim();
+        if (!seed[latestModel]) {
+            seed[latestModel] = {
+                id: latestModel,
+                name: 'GPT-5.3 Codex',
+                reasoning: true,
+                tool_call: true,
+                temperature: true,
+                limit: {
+                    context: 200000,
+                    output: 8192
+                }
+            };
+        }
+    }
+    return rewriteOpenAIModelsForRouting(seed);
+}
 function configure(config) {
     pluginConfig = { ...pluginConfig, ...config };
 }
@@ -533,28 +555,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                 if (!openai || typeof openai !== 'object')
                     return;
                 openai.models ||= {};
-                const seed = buildRouteModelSeed(openai.models);
-                const injectModelsRaw = process.env.OPENCODE_MULTI_AUTH_INJECT_MODELS;
-                const injectModels = injectModelsRaw === '1' || injectModelsRaw === 'true';
-                if (injectModels) {
-                    const latestModel = (process.env.OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL || 'gpt-5.3-codex').trim();
-                    if (!seed[latestModel]) {
-                        seed[latestModel] = {
-                            id: latestModel,
-                            name: 'GPT-5.3 Codex',
-                            reasoning: true,
-                            tool_call: true,
-                            temperature: true,
-                            limit: {
-                                // Be conservative: upstream model metadata changes over time and
-                                // incorrect limits prevent OpenCode's compaction from triggering.
-                                context: 200000,
-                                output: 8192
-                            }
-                        };
-                    }
-                }
-                openai.models = rewriteOpenAIModelsForRouting(seed);
+                openai.models = buildRoutedModelMap(openai.models);
                 const selected = config?.model;
                 if (typeof selected === 'string' && selected.startsWith('openai/')) {
                     const selectedModel = selected.replace('openai/', '');
@@ -582,6 +583,13 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
              */
             async loader(getAuth, provider) {
                 await syncAuthFromOpenCode(getAuth);
+                if (provider && typeof provider === 'object') {
+                    const models = provider.models;
+                    if (models && typeof models === 'object') {
+                        ;
+                        provider.models = buildRoutedModelMap(models);
+                    }
+                }
                 const accounts = listAccounts();
                 if (accounts.length === 0) {
                     console.log('[multi-auth] No accounts configured. Run: opencode-multi-auth add <alias>');
