@@ -29,43 +29,33 @@ type ResetPriority = {
 }
 
 function oauthResetPriority(account: AccountCredentials, now: number): ResetPriority {
-  const windows = [account.rateLimits?.fiveHour, account.rateLimits?.weekly]
-  let hasWindow = false
-  let hasAvailable = false
-  let hasUnknown = false
-  let minResetAt = Number.POSITIVE_INFINITY
+  const weekly = account.rateLimits?.weekly
+  const fiveHour = account.rateLimits?.fiveHour
 
-  for (const window of windows) {
-    if (!window) continue
-    hasWindow = true
+  const weeklyRemaining = typeof weekly?.remaining === 'number' ? weekly.remaining : undefined
+  const fiveRemaining = typeof fiveHour?.remaining === 'number' ? fiveHour.remaining : undefined
 
-    if (typeof window.remaining === 'number') {
-      if (window.remaining <= 0) continue
-      hasAvailable = true
-      if (typeof window.resetAt === 'number') {
-        minResetAt = Math.min(minResetAt, window.resetAt)
-      } else {
-        hasUnknown = true
-      }
-      continue
-    }
-
-    hasUnknown = true
+  if (typeof weeklyRemaining === 'number' && weeklyRemaining > 0 && typeof weekly?.resetAt === 'number') {
+    return { bucket: 0, resetAt: weekly.resetAt }
   }
 
-  if (hasAvailable && Number.isFinite(minResetAt)) {
-    return { bucket: 0, resetAt: minResetAt }
+  if (typeof fiveRemaining === 'number' && fiveRemaining > 0 && typeof fiveHour?.resetAt === 'number') {
+    return { bucket: 1, resetAt: fiveHour.resetAt }
   }
 
-  if (hasAvailable || hasUnknown) {
-    return { bucket: 1, resetAt: Number.POSITIVE_INFINITY }
-  }
-
-  if (!hasWindow) {
+  const hasUnknownAvailable =
+    (typeof weeklyRemaining === 'number' && weeklyRemaining > 0) ||
+    (typeof fiveRemaining === 'number' && fiveRemaining > 0)
+  if (hasUnknownAvailable) {
     return { bucket: 2, resetAt: Number.POSITIVE_INFINITY }
   }
 
-  return { bucket: 3, resetAt: Number.POSITIVE_INFINITY }
+  const hasWindow = Boolean(weekly || fiveHour)
+  if (!hasWindow) {
+    return { bucket: 3, resetAt: Number.POSITIVE_INFINITY }
+  }
+
+  return { bucket: 4, resetAt: Number.POSITIVE_INFINITY }
 }
 
 function prioritizeOauthAliases(

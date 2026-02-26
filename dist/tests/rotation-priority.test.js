@@ -83,6 +83,37 @@ test('oauth rotation de-prioritizes exhausted limits', async () => {
         temp.cleanup();
     }
 });
+test('oauth rotation prioritizes weekly reset over earlier five-hour reset', async () => {
+    const temp = setupTempStore();
+    try {
+        const now = Date.now();
+        addAccount('weekly-soon', {
+            authType: 'oauth',
+            accessToken: 'access-weekly-soon',
+            refreshToken: 'refresh-weekly-soon',
+            expiresAt: now + 24 * 3600 * 1000,
+            rateLimits: {
+                weekly: { remaining: 50, limit: 100, resetAt: now + 2 * 3600 * 1000 },
+                fiveHour: { remaining: 80, limit: 100, resetAt: now + 20 * 60 * 1000 }
+            }
+        });
+        addAccount('fivehour-soon', {
+            authType: 'oauth',
+            accessToken: 'access-fivehour-soon',
+            refreshToken: 'refresh-fivehour-soon',
+            expiresAt: now + 24 * 3600 * 1000,
+            rateLimits: {
+                weekly: { remaining: 50, limit: 100, resetAt: now + 10 * 3600 * 1000 },
+                fiveHour: { remaining: 80, limit: 100, resetAt: now + 5 * 60 * 1000 }
+            }
+        });
+        const next = await getNextAccount({ rotationStrategy: 'round-robin' }, { authType: 'oauth' });
+        assert.equal(next?.account.alias, 'weekly-soon');
+    }
+    finally {
+        temp.cleanup();
+    }
+});
 test('api rotation still follows configured strategy', async () => {
     const temp = setupTempStore();
     try {

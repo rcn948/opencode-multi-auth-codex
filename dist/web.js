@@ -249,6 +249,14 @@ const HTML = `<!doctype html>
       .status-success { background: rgba(55, 211, 153, 0.15); color: var(--success); }
       .status-error { background: rgba(255, 107, 107, 0.18); color: var(--danger); }
       .status-stopped { background: rgba(249, 115, 22, 0.2); color: var(--warning); }
+      .auth-valid { background: rgba(55, 211, 153, 0.15); color: var(--success); }
+      .auth-invalid { background: rgba(255, 107, 107, 0.18); color: var(--danger); }
+      .auth-retrying { background: rgba(255, 181, 71, 0.2); color: var(--accent); }
+      .subnotice {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 4px;
+      }
       .account-meta {
         display: grid;
         gap: 6px;
@@ -738,6 +746,44 @@ const HTML = `<!doctype html>
         return sorted
       }
 
+      function formatDurationShortMs(ms) {
+        const seconds = Math.max(1, Math.ceil(ms / 1000))
+        if (seconds < 60) return seconds + 's'
+        const minutes = Math.ceil(seconds / 60)
+        if (minutes < 60) return minutes + 'm'
+        const hours = Math.ceil(minutes / 60)
+        if (hours < 48) return hours + 'h'
+        const days = Math.ceil(hours / 24)
+        return days + 'd'
+      }
+
+      function authBadge(account, state) {
+        const now = typeof state.now === 'number' ? state.now : Date.now()
+        const retryMs = typeof state.authInvalidRetryMs === 'number' ? state.authInvalidRetryMs : 600000
+        if (!account.authInvalid) {
+          return { label: 'auth ok', className: 'auth-valid', detail: '' }
+        }
+
+        const invalidatedAt = typeof account.authInvalidatedAt === 'number' ? account.authInvalidatedAt : 0
+        const retryAt = invalidatedAt > 0 ? invalidatedAt + retryMs : 0
+        if (retryAt > 0 && retryAt <= now) {
+          return {
+            label: 'auth retrying',
+            className: 'auth-retrying',
+            detail: 'Retry window reached'
+          }
+        }
+
+        const detail = retryAt > now
+          ? 'Retry in ' + formatDurationShortMs(retryAt - now)
+          : 'Needs refresh/login'
+        return {
+          label: 'auth invalid',
+          className: 'auth-invalid',
+          detail
+        }
+      }
+
       function renderAccounts(state) {
         const filtered = sortAccounts(applyFilters(state.accounts), state)
         const cards = filtered.map((acc) => {
@@ -758,6 +804,9 @@ const HTML = `<!doctype html>
           }
           const statusClass = \`status-badge status-\${status}\`
           const statusLabel = statusLabels[status] || status
+          const auth = authBadge(acc, state)
+          const authClass = \`status-badge \${auth.className}\`
+          const skippedReason = (state.skippedReasons && state.skippedReasons[acc.alias]) || ''
           const tags = (acc.tags || []).map((tag) => \`<span class="tag-chip">\${escapeHtml(tag)}</span>\`).join('')
           const notes = acc.notes ? escapeHtml(acc.notes) : 'No notes yet.'
           const limitBlocks = [
@@ -775,9 +824,12 @@ const HTML = `<!doctype html>
                 <div style="display: grid; gap: 6px; justify-items: end;">
                   <span class="\${badgeClass}">\${badge}</span>
                   \${recommended ? '<span class="badge recommended">Recommended</span>' : ''}
-                  <span class="\${statusClass}">\${statusLabel}</span>
+                  <span class="\${authClass}">\${auth.label}</span>
+                  <span class="\${statusClass}">limits \${statusLabel}</span>
                 </div>
               </div>
+              \${auth.detail ? \`<div class="subnotice">\${escapeHtml(auth.detail)}</div>\` : ''}
+              \${!recommended && skippedReason ? \`<div class="subnotice">Skipped for recommendation: \${escapeHtml(skippedReason)}</div>\` : ''}
               <div class="account-meta">
                 <div>Type: \${typeLabel}</div>
                 <div>Token expires: \${formatDate(acc.expiresAt)}</div>
@@ -827,6 +879,10 @@ const HTML = `<!doctype html>
           <div class="meta-item">
             <span>Recommended token</span>
             <strong>\${state.recommendedAlias || 'n/a'}</strong>
+          </div>
+          <div class="meta-item">
+            <span>Recommendation reason</span>
+            <strong style="font-size: 13px;">\${escapeHtml(state.recommendedReason || 'n/a')}</strong>
           </div>
           <div class="meta-item">
             <span>auth.json path</span>
@@ -1307,55 +1363,97 @@ function remainingPercent(window) {
         return null;
     return Math.round((window.remaining / window.limit) * 100);
 }
-function isTemporarilyBlocked(account, now) {
-    if (account.rateLimitedUntil && account.rateLimitedUntil > now)
-        return true;
-    if (account.modelUnsupportedUntil && account.modelUnsupportedUntil > now)
-        return true;
-    if (account.workspaceDeactivatedUntil && account.workspaceDeactivatedUntil > now)
-        return true;
-    return false;
+function authInvalidRetryMs() {
+    const raw = process.env.OPENCODE_MULTI_AUTH_AUTH_INVALID_RETRY_MS;
+    const parsed = raw ? Number(raw) : NaN;
+    if (Number.isFinite(parsed) && parsed > 0)
+        return parsed;
+    return 10 * 60_000;
+}
+function formatDurationShort(ms) {
+    const seconds = Math.max(1, Math.ceil(ms / 1000));
+    if (seconds < 60)
+        return `${seconds}s`;
+    const minutes = Math.ceil(seconds / 60);
+    if (minutes < 60)
+        return `${minutes}m`;
+    const hours = Math.ceil(minutes / 60);
+    if (hours < 48)
+        return `${hours}h`;
+    const days = Math.ceil(hours / 24);
+    return `${days}d`;
+}
+function authState(account, now) {
+    if (!account.authInvalid) {
+        return { eligible: true, retrying: false };
+    }
+    const invalidatedAt = typeof account.authInvalidatedAt === 'number' ? account.authInvalidatedAt : 0;
+    if (!invalidatedAt) {
+        return { eligible: false, retrying: false, reason: 'auth invalid' };
+    }
+    const retryAt = invalidatedAt + authInvalidRetryMs();
+    if (retryAt <= now) {
+        return { eligible: true, retrying: true, reason: 'auth retry window reached' };
+    }
+    return {
+        eligible: false,
+        retrying: false,
+        reason: `auth invalid (retry in ${formatDurationShort(retryAt - now)})`
+    };
+}
+function blockReason(account, now) {
+    if (account.rateLimitedUntil && account.rateLimitedUntil > now) {
+        return `rate limited (${formatDurationShort(account.rateLimitedUntil - now)})`;
+    }
+    if (account.modelUnsupportedUntil && account.modelUnsupportedUntil > now) {
+        return `model unsupported (${formatDurationShort(account.modelUnsupportedUntil - now)})`;
+    }
+    if (account.workspaceDeactivatedUntil && account.workspaceDeactivatedUntil > now) {
+        return `workspace deactivated (${formatDurationShort(account.workspaceDeactivatedUntil - now)})`;
+    }
+    return null;
 }
 function oauthRecommendPriority(account) {
-    const windows = [account.rateLimits?.fiveHour, account.rateLimits?.weekly];
-    let hasWindow = false;
-    let hasAvailable = false;
-    let hasUnknown = false;
-    let minResetAt = Number.POSITIVE_INFINITY;
-    for (const window of windows) {
-        if (!window)
-            continue;
-        hasWindow = true;
-        if (typeof window.remaining === 'number') {
-            if (window.remaining <= 0)
-                continue;
-            hasAvailable = true;
-            if (typeof window.resetAt === 'number') {
-                minResetAt = Math.min(minResetAt, window.resetAt);
-            }
-            else {
-                hasUnknown = true;
-            }
-            continue;
-        }
-        hasUnknown = true;
+    const weekly = account.rateLimits?.weekly;
+    const fiveHour = account.rateLimits?.fiveHour;
+    const weeklyRemaining = typeof weekly?.remaining === 'number' ? weekly.remaining : undefined;
+    const fiveRemaining = typeof fiveHour?.remaining === 'number' ? fiveHour.remaining : undefined;
+    if (typeof weeklyRemaining === 'number' && weeklyRemaining > 0 && typeof weekly?.resetAt === 'number') {
+        return { bucket: 0, resetAt: weekly.resetAt, reason: 'earliest weekly reset with available quota' };
     }
-    if (hasAvailable && Number.isFinite(minResetAt)) {
-        return { bucket: 0, resetAt: minResetAt };
+    if (typeof fiveRemaining === 'number' && fiveRemaining > 0 && typeof fiveHour?.resetAt === 'number') {
+        return { bucket: 1, resetAt: fiveHour.resetAt, reason: 'earliest 5h reset with available quota' };
     }
-    if (hasAvailable || hasUnknown) {
-        return { bucket: 1, resetAt: Number.POSITIVE_INFINITY };
+    const hasUnknownAvailable = (typeof weeklyRemaining === 'number' && weeklyRemaining > 0) ||
+        (typeof fiveRemaining === 'number' && fiveRemaining > 0);
+    if (hasUnknownAvailable) {
+        return { bucket: 2, resetAt: Number.POSITIVE_INFINITY, reason: 'quota available but reset time unknown' };
     }
+    const hasWindow = Boolean(weekly || fiveHour);
     if (!hasWindow) {
-        return { bucket: 2, resetAt: Number.POSITIVE_INFINITY };
+        return { bucket: 3, resetAt: Number.POSITIVE_INFINITY, reason: 'no quota metadata yet' };
     }
-    return { bucket: 3, resetAt: Number.POSITIVE_INFINITY };
+    return { bucket: 4, resetAt: Number.POSITIVE_INFINITY, reason: 'quota exhausted' };
 }
-function recommendAlias(accounts) {
+function recommendAccount(accounts) {
     const now = Date.now();
-    const oauthCandidates = accounts.filter((account) => account.authType === 'oauth' && !account.authInvalid && !isTemporarilyBlocked(account, now));
-    if (oauthCandidates.length > 0) {
-        const ranked = [...oauthCandidates].sort((a, b) => {
+    const skippedReasons = {};
+    const oauthCandidates = accounts.filter((account) => account.authType === 'oauth');
+    const eligibleOauth = oauthCandidates.filter((account) => {
+        const auth = authState(account, now);
+        if (!auth.eligible) {
+            skippedReasons[account.alias] = auth.reason || 'auth invalid';
+            return false;
+        }
+        const blocked = blockReason(account, now);
+        if (blocked) {
+            skippedReasons[account.alias] = blocked;
+            return false;
+        }
+        return true;
+    });
+    if (eligibleOauth.length > 0) {
+        const ranked = [...eligibleOauth].sort((a, b) => {
             const pa = oauthRecommendPriority(a);
             const pb = oauthRecommendPriority(b);
             if (pa.bucket !== pb.bucket)
@@ -1364,14 +1462,32 @@ function recommendAlias(accounts) {
                 return pa.resetAt - pb.resetAt;
             return a.alias.localeCompare(b.alias);
         });
-        return ranked[0]?.alias ?? null;
+        const selected = ranked[0];
+        if (!selected) {
+            return { alias: null, reason: 'no eligible oauth account', skippedReasons };
+        }
+        const pr = oauthRecommendPriority(selected);
+        const resetNote = Number.isFinite(pr.resetAt)
+            ? ` (reset ${new Date(pr.resetAt).toLocaleString()})`
+            : '';
+        return {
+            alias: selected.alias,
+            reason: `${pr.reason}${resetNote}`,
+            skippedReasons
+        };
     }
     let best = null;
     for (const account of accounts) {
-        if (account.authInvalid)
+        const auth = authState(account, now);
+        if (!auth.eligible) {
+            skippedReasons[account.alias] = auth.reason || 'auth invalid';
             continue;
-        if (isTemporarilyBlocked(account, now))
+        }
+        const blocked = blockReason(account, now);
+        if (blocked) {
+            skippedReasons[account.alias] = blocked;
             continue;
+        }
         const fiveRaw = remainingPercent(account.rateLimits?.fiveHour);
         const weeklyRaw = remainingPercent(account.rateLimits?.weekly);
         if (fiveRaw === null && weeklyRaw === null) {
@@ -1386,7 +1502,11 @@ function recommendAlias(accounts) {
             best = { alias: account.alias, score };
         }
     }
-    return best?.alias ?? null;
+    return {
+        alias: best?.alias ?? null,
+        reason: best ? 'fallback by remaining quota score' : 'no eligible account with quota data',
+        skippedReasons
+    };
 }
 function runSync() {
     try {
@@ -1782,6 +1902,7 @@ export function startWebConsole(options) {
             const store = loadStore();
             const rawAccounts = Object.values(store.accounts);
             const accounts = rawAccounts.map(scrubAccount);
+            const recommendation = recommendAccount(rawAccounts);
             const storeStatus = getStoreStatus();
             const antigravity = loadAntigravityAccounts();
             sendJson(res, 200, {
@@ -1795,7 +1916,11 @@ export function startWebConsole(options) {
                 lastLoginError,
                 antigravity: { ...antigravity, quota: antigravityQuotaState },
                 queue: getRefreshQueueState(),
-                recommendedAlias: recommendAlias(rawAccounts),
+                recommendedAlias: recommendation.alias,
+                recommendedReason: recommendation.reason,
+                skippedReasons: recommendation.skippedReasons,
+                authInvalidRetryMs: authInvalidRetryMs(),
+                now: Date.now(),
                 logPath: getLogPath()
             });
             return;
