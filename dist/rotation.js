@@ -71,7 +71,13 @@ export async function getNextAccount(config, options) {
         if (options?.authType && acc.authType !== options.authType)
             return false;
         const notRateLimited = !acc.rateLimitedUntil || acc.rateLimitedUntil < now;
-        const notModelUnsupported = !acc.modelUnsupportedUntil || acc.modelUnsupportedUntil < now;
+        const activeModelUnsupported = acc.modelUnsupportedUntil && acc.modelUnsupportedUntil > now;
+        const blockedModel = typeof acc.modelUnsupportedModel === 'string' ? acc.modelUnsupportedModel : undefined;
+        const requestedModel = typeof options?.model === 'string' ? options.model : undefined;
+        const notModelUnsupported = !activeModelUnsupported ||
+            !requestedModel ||
+            !blockedModel ||
+            blockedModel !== requestedModel;
         const notWorkspaceDeactivated = !acc.workspaceDeactivatedUntil || acc.workspaceDeactivatedUntil < now;
         const invalidatedAt = typeof acc.authInvalidatedAt === 'number' ? acc.authInvalidatedAt : 0;
         const invalidRetryReady = invalidatedAt > 0 && invalidatedAt + authInvalidRetryMs < now;

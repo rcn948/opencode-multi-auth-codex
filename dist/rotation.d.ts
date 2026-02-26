@@ -6,6 +6,7 @@ export interface RotationResult {
 }
 export declare function getNextAccount(config: Pick<PluginConfig, 'rotationStrategy'>, options?: {
     authType?: AccountAuthType;
+    model?: string;
 }): Promise<RotationResult | null>;
 export declare function markRateLimited(alias: string, cooldownMs: number): void;
 export declare function clearRateLimit(alias: string): void;

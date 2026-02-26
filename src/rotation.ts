@@ -75,7 +75,7 @@ function prioritizeOauthAliases(
 
 export async function getNextAccount(
   config: Pick<PluginConfig, 'rotationStrategy'>,
-  options?: { authType?: AccountAuthType }
+  options?: { authType?: AccountAuthType; model?: string }
 ): Promise<RotationResult | null> {
   let store = loadStore()
   const aliases = Object.keys(store.accounts)
@@ -106,8 +106,14 @@ export async function getNextAccount(
     const acc = store.accounts[alias]
     if (options?.authType && acc.authType !== options.authType) return false
     const notRateLimited = !acc.rateLimitedUntil || acc.rateLimitedUntil < now
+    const activeModelUnsupported = acc.modelUnsupportedUntil && acc.modelUnsupportedUntil > now
+    const blockedModel = typeof acc.modelUnsupportedModel === 'string' ? acc.modelUnsupportedModel : undefined
+    const requestedModel = typeof options?.model === 'string' ? options.model : undefined
     const notModelUnsupported =
-      !acc.modelUnsupportedUntil || acc.modelUnsupportedUntil < now
+      !activeModelUnsupported ||
+      !requestedModel ||
+      !blockedModel ||
+      blockedModel !== requestedModel
     const notWorkspaceDeactivated =
       !acc.workspaceDeactivatedUntil || acc.workspaceDeactivatedUntil < now
     const invalidatedAt = typeof acc.authInvalidatedAt === 'number' ? acc.authInvalidatedAt : 0

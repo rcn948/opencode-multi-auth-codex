@@ -1,6 +1,17 @@
 export const CODEX_ORIGIN = 'https://chatgpt.com';
 export const CODEX_BACKEND_PREFIX = '/backend-api';
 export const ROUTE_HINT_OPTION = 'opencodeMultiAuthRoute';
+function stripReasoningSuffix(modelID) {
+    return modelID.replace(/-(?:none|low|medium|high|xhigh)$/, '');
+}
+function stripRouteSuffix(modelID) {
+    return modelID.replace(/-(?:api|oauth)$/, '');
+}
+function canonicalModelID(modelID) {
+    const withoutReasoning = stripReasoningSuffix(modelID);
+    const withoutRoute = stripRouteSuffix(withoutReasoning);
+    return stripReasoningSuffix(withoutRoute);
+}
 function contentToText(content) {
     if (typeof content === 'string')
         return content;
@@ -95,7 +106,7 @@ export function normalizeModel(model) {
     if (!raw)
         return undefined;
     const modelId = raw.includes('/') ? raw.split('/').pop() : raw;
-    const baseModel = modelId.replace(/-(?:none|low|medium|high|xhigh)$/, '');
+    const baseModel = canonicalModelID(modelId);
     const preferLatestRaw = process.env.OPENCODE_MULTI_AUTH_PREFER_CODEX_LATEST;
     const preferLatest = preferLatestRaw !== '0' && preferLatestRaw !== 'false';
     if (preferLatest && (baseModel === 'gpt-5.2-codex' || baseModel === 'gpt-5-codex')) {
@@ -110,7 +121,12 @@ export function normalizeModel(model) {
 export function selectAuthTypeForRequest(model, requestUrl) {
     const raw = extractModelName(model);
     const modelId = raw?.includes('/') ? raw.split('/').pop() : raw;
-    const baseModel = modelId?.replace(/-(?:none|low|medium|high|xhigh)$/, '') || '';
+    const withoutReasoning = modelId ? stripReasoningSuffix(modelId) : '';
+    if (withoutReasoning.endsWith('-oauth'))
+        return 'oauth';
+    if (withoutReasoning.endsWith('-api'))
+        return 'api';
+    const baseModel = stripRouteSuffix(withoutReasoning);
     if (baseModel.includes('codex'))
         return 'oauth';
     if (requestUrl && requestUrl.includes('/codex/'))

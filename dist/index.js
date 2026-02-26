@@ -745,6 +745,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                     const body = await resolveRequestBody(input, init);
                     const outgoingHeaders = resolveRequestHeaders(input, init);
                     const rawModel = extractModelName(body.model);
+                    const normalizedModel = normalizeModel(body.model);
                     const forcedAuthType = extractForcedAuthType(body);
                     const authHint = await (async () => {
                         try {
@@ -766,10 +767,13 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                     const selectedAuthType = forcedAuthType || (rawModel
                         ? selectAuthTypeForRequest(body.model, originalUrl)
                         : (authHint ?? selectAuthTypeForRequest(body.model, originalUrl)));
-                    let rotation = await getNextAccount(pluginConfig, { authType: selectedAuthType });
+                    let rotation = await getNextAccount(pluginConfig, {
+                        authType: selectedAuthType,
+                        model: normalizedModel
+                    });
                     if (!rotation && !rawModel) {
                         const fallback = selectedAuthType === 'oauth' ? 'api' : 'oauth';
-                        rotation = await getNextAccount(pluginConfig, { authType: fallback });
+                        rotation = await getNextAccount(pluginConfig, { authType: fallback, model: normalizedModel });
                     }
                     if (!rotation) {
                         const label = selectedAuthType === 'api' ? 'API key' : 'OAuth';
@@ -777,7 +781,6 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                     }
                     const { account, credential, authType: resolvedAuthType } = rotation;
                     const isStreaming = body?.stream === true;
-                    const normalizedModel = normalizeModel(body.model);
                     const reasoningMatch = rawModel?.match(/-(none|low|medium|high|xhigh)$/);
                     const payload = {
                         ...body,
@@ -900,7 +903,10 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                             if (resolvedAuthType === 'api' || message.toLowerCase().includes('invalidated') || res.status === 401) {
                                 markAuthInvalid(account.alias);
                             }
-                            const retryRotation = await getNextAccount(pluginConfig, { authType: resolvedAuthType });
+                            const retryRotation = await getNextAccount(pluginConfig, {
+                                authType: resolvedAuthType,
+                                model: normalizedModel
+                            });
                             if (retryRotation && retryRotation.account.alias !== account.alias) {
                                 return customFetch(input, init, local429RetryAttempt);
                             }
@@ -912,7 +918,10 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                         }
                         if (res.status === 429) {
                             markRateLimited(account.alias, pluginConfig.rateLimitCooldownMs);
-                            const retryRotation = await getNextAccount(pluginConfig, { authType: resolvedAuthType });
+                            const retryRotation = await getNextAccount(pluginConfig, {
+                                authType: resolvedAuthType,
+                                model: normalizedModel
+                            });
                             if (retryRotation && retryRotation.account.alias !== account.alias) {
                                 return customFetch(input, init, local429RetryAttempt);
                             }
@@ -971,7 +980,10 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                                 markWorkspaceDeactivated(account.alias, pluginConfig.workspaceDeactivatedCooldownMs, {
                                     error: message || code
                                 });
-                                const retryRotation = await getNextAccount(pluginConfig, { authType: 'oauth' });
+                                const retryRotation = await getNextAccount(pluginConfig, {
+                                    authType: 'oauth',
+                                    model: normalizedModel
+                                });
                                 if (retryRotation && retryRotation.account.alias !== account.alias) {
                                     return customFetch(input, init, local429RetryAttempt);
                                 }
@@ -999,7 +1011,10 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                                     model: normalizedModel,
                                     error: message
                                 });
-                                const retryRotation = await getNextAccount(pluginConfig, { authType: 'oauth' });
+                                const retryRotation = await getNextAccount(pluginConfig, {
+                                    authType: 'oauth',
+                                    model: normalizedModel
+                                });
                                 if (retryRotation && retryRotation.account.alias !== account.alias) {
                                     return customFetch(input, init, local429RetryAttempt);
                                 }

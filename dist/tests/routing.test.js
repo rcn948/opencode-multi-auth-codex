@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extractForcedAuthType, ensureCodexInstructions, ensureCodexPayloadCompatibility, rewriteOpenAIModelsForRouting, selectAuthTypeForRequest, toCodexBackendUrl } from '../routing.js';
+import { extractForcedAuthType, ensureCodexInstructions, ensureCodexPayloadCompatibility, normalizeModel, rewriteOpenAIModelsForRouting, selectAuthTypeForRequest, toCodexBackendUrl } from '../routing.js';
 test('selectAuthTypeForRequest routes codex models to oauth', () => {
     assert.equal(selectAuthTypeForRequest('gpt-5.3-codex'), 'oauth');
     assert.equal(selectAuthTypeForRequest('openai/gpt-5.2-codex-high'), 'oauth');
@@ -8,6 +8,16 @@ test('selectAuthTypeForRequest routes codex models to oauth', () => {
 test('selectAuthTypeForRequest routes non-codex models to api', () => {
     assert.equal(selectAuthTypeForRequest('gpt-5.2'), 'api');
     assert.equal(selectAuthTypeForRequest('gpt-4.1'), 'api');
+});
+test('selectAuthTypeForRequest honors explicit route suffixes', () => {
+    assert.equal(selectAuthTypeForRequest('gpt-5.3-codex-api'), 'api');
+    assert.equal(selectAuthTypeForRequest('gpt-5.3-codex-oauth'), 'oauth');
+    assert.equal(selectAuthTypeForRequest('openai/gpt-5.3-codex-api-high'), 'api');
+});
+test('normalizeModel strips auth-route suffixes', () => {
+    assert.equal(normalizeModel('gpt-5.3-codex-oauth'), 'gpt-5.3-codex');
+    assert.equal(normalizeModel('openai/gpt-5.3-codex-api-high'), 'gpt-5.3-codex');
+    assert.equal(normalizeModel('gpt-5.2-oauth'), 'gpt-5.2');
 });
 test('selectAuthTypeForRequest handles object model payloads', () => {
     assert.equal(selectAuthTypeForRequest({ model: 'gpt-5.3-codex' }), 'oauth');

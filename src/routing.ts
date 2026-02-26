@@ -6,6 +6,20 @@ export const ROUTE_HINT_OPTION = 'opencodeMultiAuthRoute'
 
 type ProviderModelConfig = Record<string, any>
 
+function stripReasoningSuffix(modelID: string): string {
+  return modelID.replace(/-(?:none|low|medium|high|xhigh)$/, '')
+}
+
+function stripRouteSuffix(modelID: string): string {
+  return modelID.replace(/-(?:api|oauth)$/, '')
+}
+
+function canonicalModelID(modelID: string): string {
+  const withoutReasoning = stripReasoningSuffix(modelID)
+  const withoutRoute = stripRouteSuffix(withoutReasoning)
+  return stripReasoningSuffix(withoutRoute)
+}
+
 function contentToText(content: unknown): string {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
@@ -90,7 +104,7 @@ export function normalizeModel(model: unknown): string | undefined {
   if (!raw) return undefined
 
   const modelId = raw.includes('/') ? raw.split('/').pop()! : raw
-  const baseModel = modelId.replace(/-(?:none|low|medium|high|xhigh)$/, '')
+  const baseModel = canonicalModelID(modelId)
 
   const preferLatestRaw = process.env.OPENCODE_MULTI_AUTH_PREFER_CODEX_LATEST
   const preferLatest = preferLatestRaw !== '0' && preferLatestRaw !== 'false'
@@ -109,7 +123,10 @@ export function normalizeModel(model: unknown): string | undefined {
 export function selectAuthTypeForRequest(model: unknown, requestUrl?: string): AccountAuthType {
   const raw = extractModelName(model)
   const modelId = raw?.includes('/') ? raw.split('/').pop() : raw
-  const baseModel = modelId?.replace(/-(?:none|low|medium|high|xhigh)$/, '') || ''
+  const withoutReasoning = modelId ? stripReasoningSuffix(modelId) : ''
+  if (withoutReasoning.endsWith('-oauth')) return 'oauth'
+  if (withoutReasoning.endsWith('-api')) return 'api'
+  const baseModel = stripRouteSuffix(withoutReasoning)
   if (baseModel.includes('codex')) return 'oauth'
   if (requestUrl && requestUrl.includes('/codex/')) return 'oauth'
   return 'api'

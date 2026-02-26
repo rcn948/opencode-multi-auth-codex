@@ -854,6 +854,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
           const outgoingHeaders = resolveRequestHeaders(input, init)
 
           const rawModel = extractModelName(body.model)
+          const normalizedModel = normalizeModel(body.model)
           const forcedAuthType = extractForcedAuthType(body)
           const authHint = await (async () => {
             try {
@@ -876,11 +877,14 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
               : (authHint ?? selectAuthTypeForRequest(body.model, originalUrl))
           )
 
-          let rotation = await getNextAccount(pluginConfig, { authType: selectedAuthType })
+          let rotation = await getNextAccount(pluginConfig, {
+            authType: selectedAuthType,
+            model: normalizedModel
+          })
 
           if (!rotation && !rawModel) {
             const fallback = selectedAuthType === 'oauth' ? 'api' : 'oauth'
-            rotation = await getNextAccount(pluginConfig, { authType: fallback })
+            rotation = await getNextAccount(pluginConfig, { authType: fallback, model: normalizedModel })
           }
 
           if (!rotation) {
@@ -893,7 +897,6 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
 
           const { account, credential, authType: resolvedAuthType } = rotation
           const isStreaming = body?.stream === true
-          const normalizedModel = normalizeModel(body.model)
           const reasoningMatch = rawModel?.match(/-(none|low|medium|high|xhigh)$/)
 
           const payload: Record<string, any> = {
@@ -1045,7 +1048,10 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
                 markAuthInvalid(account.alias)
               }
 
-              const retryRotation = await getNextAccount(pluginConfig, { authType: resolvedAuthType })
+              const retryRotation = await getNextAccount(pluginConfig, {
+                authType: resolvedAuthType,
+                model: normalizedModel
+              })
               if (retryRotation && retryRotation.account.alias !== account.alias) {
                 return customFetch(input, init, local429RetryAttempt)
               }
@@ -1063,7 +1069,10 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
             if (res.status === 429) {
               markRateLimited(account.alias, pluginConfig.rateLimitCooldownMs)
 
-              const retryRotation = await getNextAccount(pluginConfig, { authType: resolvedAuthType })
+              const retryRotation = await getNextAccount(pluginConfig, {
+                authType: resolvedAuthType,
+                model: normalizedModel
+              })
               if (retryRotation && retryRotation.account.alias !== account.alias) {
                 return customFetch(input, init, local429RetryAttempt)
               }
@@ -1137,7 +1146,10 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
                   error: message || code
                 })
 
-                const retryRotation = await getNextAccount(pluginConfig, { authType: 'oauth' })
+                const retryRotation = await getNextAccount(pluginConfig, {
+                  authType: 'oauth',
+                  model: normalizedModel
+                })
                 if (retryRotation && retryRotation.account.alias !== account.alias) {
                   return customFetch(input, init, local429RetryAttempt)
                 }
@@ -1175,7 +1187,10 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
                   error: message
                 })
 
-                const retryRotation = await getNextAccount(pluginConfig, { authType: 'oauth' })
+                const retryRotation = await getNextAccount(pluginConfig, {
+                  authType: 'oauth',
+                  model: normalizedModel
+                })
                 if (retryRotation && retryRotation.account.alias !== account.alias) {
                   return customFetch(input, init, local429RetryAttempt)
                 }

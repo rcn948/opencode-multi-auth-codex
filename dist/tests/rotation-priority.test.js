@@ -167,4 +167,27 @@ test('invalid oauth accounts are retried after cooldown and auto-cleared when va
         temp.cleanup();
     }
 });
+test('model unsupported cooldown only blocks matching model id', async () => {
+    const temp = setupTempStore();
+    try {
+        const now = Date.now();
+        addAccount('oauth-a', {
+            authType: 'oauth',
+            accessToken: 'access-a',
+            refreshToken: 'refresh-a',
+            expiresAt: now + 24 * 3600 * 1000
+        });
+        updateAccount('oauth-a', {
+            modelUnsupportedUntil: now + 30 * 60 * 1000,
+            modelUnsupportedModel: 'gpt-5.3-codex-oauth'
+        });
+        const blocked = await getNextAccount({ rotationStrategy: 'round-robin' }, { authType: 'oauth', model: 'gpt-5.3-codex-oauth' });
+        assert.equal(blocked, null);
+        const allowed = await getNextAccount({ rotationStrategy: 'round-robin' }, { authType: 'oauth', model: 'gpt-5.3-codex' });
+        assert.equal(allowed?.account.alias, 'oauth-a');
+    }
+    finally {
+        temp.cleanup();
+    }
+});
 //# sourceMappingURL=rotation-priority.test.js.map
