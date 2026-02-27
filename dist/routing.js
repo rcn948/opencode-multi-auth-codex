@@ -170,7 +170,12 @@ function shouldDualRouteModel(apiID) {
     return dualRouteModelIDs().has(id);
 }
 function providerModelID(key, model) {
-    return typeof model.id === 'string' && model.id.trim() ? model.id : key;
+    const apiID = model?.api?.id;
+    if (typeof apiID === 'string' && apiID.trim())
+        return canonicalModelID(apiID);
+    if (typeof model.id === 'string' && model.id.trim())
+        return canonicalModelID(model.id);
+    return canonicalModelID(key);
 }
 function withRouteOption(model, route) {
     const options = model.options && typeof model.options === 'object' ? model.options : {};
@@ -179,10 +184,10 @@ function withRouteOption(model, route) {
         [ROUTE_HINT_OPTION]: route
     };
 }
-function withLabeledRoute(model, apiID, name, route) {
+function withLabeledRoute(model, modelID, apiID, name, route) {
     return {
         ...model,
-        id: apiID,
+        id: modelID,
         name,
         options: withRouteOption(model, route)
     };
@@ -230,19 +235,19 @@ export function rewriteOpenAIModelsForRouting(models) {
             if (expandedModelIDs.has(apiID))
                 continue;
             expandedModelIDs.add(apiID);
-            addModel(out, `${apiID}-api`, withLabeledRoute(model, apiID, `${cleanName} (API)`, 'api'));
-            addModel(out, `${apiID}-oauth`, withLabeledRoute(model, apiID, `${cleanName} (OAuth)`, 'oauth'));
+            addModel(out, `${apiID}-api`, withLabeledRoute(model, `${apiID}-api`, apiID, `${cleanName} (API)`, 'api'));
+            addModel(out, `${apiID}-oauth`, withLabeledRoute(model, `${apiID}-oauth`, apiID, `${cleanName} (OAuth)`, 'oauth'));
             continue;
         }
         if (shouldDualRouteModel(apiID)) {
             if (expandedModelIDs.has(apiID))
                 continue;
             expandedModelIDs.add(apiID);
-            addModel(out, `${apiID}-api`, withLabeledRoute(model, apiID, `${cleanName} (API)`, 'api'));
-            addModel(out, `${apiID}-oauth`, withLabeledRoute(model, apiID, `${cleanName} (OAuth)`, 'oauth'));
+            addModel(out, `${apiID}-api`, withLabeledRoute(model, `${apiID}-api`, apiID, `${cleanName} (API)`, 'api'));
+            addModel(out, `${apiID}-oauth`, withLabeledRoute(model, `${apiID}-oauth`, apiID, `${cleanName} (OAuth)`, 'oauth'));
             continue;
         }
-        addModel(out, key, withLabeledRoute(model, apiID, `${cleanName} (API)`, 'api'));
+        addModel(out, key, withLabeledRoute(model, key, apiID, `${cleanName} (API)`, 'api'));
     }
     return out;
 }

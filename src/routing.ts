@@ -173,7 +173,10 @@ function shouldDualRouteModel(apiID: string): boolean {
 }
 
 function providerModelID(key: string, model: ProviderModelConfig): string {
-  return typeof model.id === 'string' && model.id.trim() ? model.id : key
+  const apiID = model?.api?.id
+  if (typeof apiID === 'string' && apiID.trim()) return canonicalModelID(apiID)
+  if (typeof model.id === 'string' && model.id.trim()) return canonicalModelID(model.id)
+  return canonicalModelID(key)
 }
 
 function withRouteOption(model: ProviderModelConfig, route: AccountAuthType): Record<string, any> {
@@ -184,10 +187,16 @@ function withRouteOption(model: ProviderModelConfig, route: AccountAuthType): Re
   }
 }
 
-function withLabeledRoute(model: ProviderModelConfig, apiID: string, name: string, route: AccountAuthType): ProviderModelConfig {
+function withLabeledRoute(
+  model: ProviderModelConfig,
+  modelID: string,
+  apiID: string,
+  name: string,
+  route: AccountAuthType
+): ProviderModelConfig {
   return {
     ...model,
-    id: apiID,
+    id: modelID,
     name,
     options: withRouteOption(model, route)
   }
@@ -242,20 +251,20 @@ export function rewriteOpenAIModelsForRouting(
     if (apiID.toLowerCase().includes('codex')) {
       if (expandedModelIDs.has(apiID)) continue
       expandedModelIDs.add(apiID)
-      addModel(out, `${apiID}-api`, withLabeledRoute(model, apiID, `${cleanName} (API)`, 'api'))
-      addModel(out, `${apiID}-oauth`, withLabeledRoute(model, apiID, `${cleanName} (OAuth)`, 'oauth'))
+      addModel(out, `${apiID}-api`, withLabeledRoute(model, `${apiID}-api`, apiID, `${cleanName} (API)`, 'api'))
+      addModel(out, `${apiID}-oauth`, withLabeledRoute(model, `${apiID}-oauth`, apiID, `${cleanName} (OAuth)`, 'oauth'))
       continue
     }
 
     if (shouldDualRouteModel(apiID)) {
       if (expandedModelIDs.has(apiID)) continue
       expandedModelIDs.add(apiID)
-      addModel(out, `${apiID}-api`, withLabeledRoute(model, apiID, `${cleanName} (API)`, 'api'))
-      addModel(out, `${apiID}-oauth`, withLabeledRoute(model, apiID, `${cleanName} (OAuth)`, 'oauth'))
+      addModel(out, `${apiID}-api`, withLabeledRoute(model, `${apiID}-api`, apiID, `${cleanName} (API)`, 'api'))
+      addModel(out, `${apiID}-oauth`, withLabeledRoute(model, `${apiID}-oauth`, apiID, `${cleanName} (OAuth)`, 'oauth'))
       continue
     }
 
-    addModel(out, key, withLabeledRoute(model, apiID, `${cleanName} (API)`, 'api'))
+    addModel(out, key, withLabeledRoute(model, key, apiID, `${cleanName} (API)`, 'api'))
   }
 
   return out
