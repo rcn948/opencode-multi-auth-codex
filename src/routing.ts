@@ -194,9 +194,14 @@ function withLabeledRoute(
   name: string,
   route: AccountAuthType
 ): ProviderModelConfig {
+  const api = model.api && typeof model.api === 'object'
+    ? { ...model.api, id: modelID }
+    : { id: modelID }
+
   return {
     ...model,
     id: modelID,
+    api,
     name,
     options: withRouteOption(model, route)
   }

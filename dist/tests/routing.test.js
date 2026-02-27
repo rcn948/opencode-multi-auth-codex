@@ -83,12 +83,16 @@ test('rewriteOpenAIModelsForRouting creates API and OAuth aliases for dual model
     assert.equal(rewritten['gpt-5.2-oauth'].name, 'GPT 5.2 (OAuth)');
     assert.equal(rewritten['gpt-5.2-api'].id, 'gpt-5.2-api');
     assert.equal(rewritten['gpt-5.2-oauth'].id, 'gpt-5.2-oauth');
+    assert.equal(rewritten['gpt-5.2-api'].api?.id, 'gpt-5.2-api');
+    assert.equal(rewritten['gpt-5.2-oauth'].api?.id, 'gpt-5.2-oauth');
     assert.equal(rewritten['gpt-5.2-api'].options?.opencodeMultiAuthRoute, 'api');
     assert.equal(rewritten['gpt-5.2-oauth'].options?.opencodeMultiAuthRoute, 'oauth');
     assert.ok(rewritten['gpt-5.2-codex-api']);
     assert.ok(rewritten['gpt-5.2-codex-oauth']);
     assert.equal(rewritten['gpt-5.2-codex-api'].name, 'GPT 5.2 Codex (API)');
     assert.equal(rewritten['gpt-5.2-codex-oauth'].name, 'GPT 5.2 Codex (OAuth)');
+    assert.equal(rewritten['gpt-5.2-codex-api'].api?.id, 'gpt-5.2-codex-api');
+    assert.equal(rewritten['gpt-5.2-codex-oauth'].api?.id, 'gpt-5.2-codex-oauth');
     assert.equal(rewritten['gpt-5.2-codex-api'].options?.opencodeMultiAuthRoute, 'api');
     assert.equal(rewritten['gpt-5.2-codex-oauth'].options?.opencodeMultiAuthRoute, 'oauth');
 });
