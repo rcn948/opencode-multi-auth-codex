@@ -198,7 +198,8 @@ In OpenCode:
 
 - Providers / Auth
 - OpenAI
-- Choose **"ChatGPT OAuth (Multi-Account)"**
+- Choose **"ChatGPT OAuth (Headless, Multi-Auth)"**
+  - Fallback option is also available: **"ChatGPT OAuth (Browser Callback, Fallback)"**
 - Enter an alias (e.g. `acc1`, `work`, `backup`)
 - Complete login in your browser
 
@@ -249,8 +250,11 @@ node ~/.config/opencode/node_modules/@dredivaris/opencode-multi-auth-codex/dist/
 
 Routing behavior:
 
-- Codex models use OAuth account rotation.
-- Non-Codex OpenAI models use API-key account rotation.
+- `-oauth` models (or `(OAuth)` picker entries) use OAuth rotation.
+- `-api` models (or `(API)` picker entries) use API-key rotation.
+- Without explicit route labels: codex models default to OAuth, non-codex models default to API.
+- Codex models are exposed as both API and OAuth variants; some non-codex models are also dual-route (`gpt-5`, `gpt-5.1`, `gpt-5.2`).
+- OAuth account selection is quota-reset aware (nearest usable reset first); API follows configured strategy.
 
 ## Codex 5.3 Mapping (How to Use the Newest Codex)
 
@@ -264,6 +268,7 @@ Env vars:
 
 - `OPENCODE_MULTI_AUTH_PREFER_CODEX_LATEST=0` disables mapping.
 - `OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL=gpt-5.3-codex` overrides target.
+- `OPENCODE_MULTI_AUTH_DUAL_ROUTE_MODELS=gpt-5,gpt-5.1,gpt-5.2` controls non-codex dual-route variants.
 - `OPENCODE_MULTI_AUTH_DEBUG=1` prints mapping logs.
 
 ### Verify mapping works
@@ -316,12 +321,21 @@ Fix:
 
 ### "No available API key accounts"
 
-You are using a non-Codex model and no API-key account is available.
+You selected an API-routed model but no API-key account is available.
 
 Fix:
 
 - Add one with `add-api` (CLI) or connect OpenCode OpenAI with "Manually enter API Key"
 - Re-run `status` to confirm API aliases exist
+
+### "No available OAuth accounts"
+
+You selected an OAuth-routed model but no OAuth account is available.
+
+Fix:
+
+- Add one with `add` (CLI) or OpenCode OAuth login flow
+- Re-run `status` to confirm OAuth aliases exist
 
 ### 401 / "token invalidated" / "Token refresh failed"
 

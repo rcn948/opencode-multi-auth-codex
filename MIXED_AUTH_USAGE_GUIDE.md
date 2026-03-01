@@ -61,7 +61,8 @@ node ./dist/cli.js help
 In OpenCode auth/provider UI:
 
 1. Select `openai`
-2. Choose `ChatGPT OAuth (Multi-Account)`
+2. Choose `ChatGPT OAuth (Headless, Multi-Auth)`
+   - Fallback option also exists: `ChatGPT OAuth (Browser Callback, Fallback)`
 3. Enter alias (for example `personal`, `work`)
 4. Complete browser login
 
@@ -113,10 +114,23 @@ You will see account type labels (`oauth` or `api`) and usage/health state.
 
 Switching is model-based and automatic:
 
-- Codex models (for example `gpt-5.3-codex`) use the OAuth account pool
-- Non-codex OpenAI models (for example `gpt-5.2`, `gpt-4.1`) use the API-key pool
+- Models with `-oauth` (or `(OAuth)` in picker) use OAuth pool
+- Models with `-api` (or `(API)` in picker) use API-key pool
+- If no explicit route suffix/label is present:
+  - models containing `codex` route to OAuth
+  - non-codex models route to API
 
-Within each pool, accounts rotate round-robin and skip temporarily blocked accounts.
+Picker behavior:
+
+- Codex models are exposed as both `(API)` and `(OAuth)` variants
+- Non-codex models are API-labeled by default
+- Some non-codex models are dual-route by default (`gpt-5`, `gpt-5.1`, `gpt-5.2`)
+
+Rotation behavior:
+
+- API accounts follow configured rotation strategy (`round-robin` default)
+- OAuth accounts are additionally prioritized by nearest usable quota reset
+- Temporarily blocked/invalid accounts are skipped until cooldown/retry window
 
 ### Manual "Use on device" switching (OAuth only)
 
@@ -135,8 +149,13 @@ Note: API accounts do not write into `~/.codex/auth.json`.
 - Add OAuth account (browser login)
 - Add API key account
 - View account type, status, and usage
+- See recommended OAuth account + recommendation reason
+- Search/filter by alias/email/tags/notes
+- Sort by recommended, limits, expiry, refresh time, or alias
+- Edit tags/notes per account
 - Refresh OAuth tokens
 - Refresh OAuth rate-limit probes
+- Queue progress + stop for limit refresh jobs
 - Remove accounts
 
 ## 8) Useful Environment Variables
@@ -144,6 +163,12 @@ Note: API accounts do not write into `~/.codex/auth.json`.
 - `OPENCODE_MULTI_AUTH_SYNC_API=0` disable auto-import of OpenCode API auth
 - `OPENCODE_MULTI_AUTH_API_KEY` provide API key for `add-api`
 - `OPENCODE_MULTI_AUTH_DEBUG=1` enable extra debug logging
+- `OPENCODE_MULTI_AUTH_PREFER_CODEX_LATEST=0` disable `gpt-5.2-codex` -> latest codex mapping
+- `OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL=gpt-5.3-codex` override mapped latest codex target
+- `OPENCODE_MULTI_AUTH_DUAL_ROUTE_MODELS=gpt-5,gpt-5.1,gpt-5.2` choose non-codex models that get both API/OAuth picker variants
+- `OPENCODE_MULTI_AUTH_INJECT_MODELS=1` inject latest codex model into routed model map when missing from OpenCode cache
+- `OPENCODE_MULTI_AUTH_REQUEST_TIMEOUT_MS=45000` request timeout override
+- `OPENCODE_MULTI_AUTH_LOCAL_429_RETRIES=2` local retries when all accounts in chosen pool are cooling down
 - `CODEX_SOFT_STORE_PASSPHRASE` encrypt local account store at rest
 
 ## 9) Storage and Security
@@ -157,12 +182,14 @@ Treat both as sensitive credential files. Do not share them.
 
 ### `No available OAuth accounts`
 
-- Add OAuth accounts (`add <alias>`)
+- You selected an OAuth-routed model but no usable OAuth accounts exist
+- Add OAuth account (`add <alias>`)
 - Re-auth invalid OAuth aliases
-- Wait for temporary cooldown to expire
+- Wait for temporary cooldown/retry window to expire
 
 ### `No available API key accounts`
 
+- You selected an API-routed model but no usable API accounts exist
 - Add API account (`add-api <alias>`)
 - Or add key through OpenCode UI (`Manually enter API Key`) and let it auto-import
 

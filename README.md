@@ -82,6 +82,25 @@ opencode-multi-auth add-api backup-api --key sk-...
 If you use OpenCode's built-in "Manually enter API Key" for provider `openai`, this plugin
 auto-imports it into the multi-account store by default.
 
+## Model Routing and Picker Behavior
+
+The plugin rewrites OpenCode's `openai` model list with route-labeled entries.
+
+- Codex models get both `(API)` and `(OAuth)` variants
+- Non-codex models are API by default
+- Some non-codex models are dual-route by default (`gpt-5`, `gpt-5.1`, `gpt-5.2`)
+
+Route selection rules:
+
+- Pick a model with `(OAuth)` or `-oauth` to force OAuth pool
+- Pick a model with `(API)` or `-api` to force API-key pool
+- If no explicit route is present: models containing `codex` default to OAuth, otherwise API
+
+Advanced request override (if you send raw payloads):
+
+- Set `opencodeMultiAuthRoute`, `opencode_multi_auth_route`, or `_opencode_multi_auth_route`
+  to `oauth` or `api`
+
 ## Verify Setup
 
 ```bash
@@ -254,6 +273,8 @@ Default behavior:
 Environment variables:
 - `OPENCODE_MULTI_AUTH_PREFER_CODEX_LATEST=0` disables the mapping (use exact model).
 - `OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL=gpt-5.3-codex` overrides the target model.
+- `OPENCODE_MULTI_AUTH_DUAL_ROUTE_MODELS=gpt-5,gpt-5.1,gpt-5.2` sets which non-codex models get both API/OAuth variants in the picker.
+- `OPENCODE_MULTI_AUTH_INJECT_MODELS=1` injects the latest Codex model into the routed model map if OpenCode cache does not include it yet.
 - `OPENCODE_MULTI_AUTH_DEBUG=1` prints mapping logs like: `model map: gpt-5.2-codex -> gpt-5.3-codex`.
 
 ## Troubleshooting
@@ -299,22 +320,31 @@ Optional fallback: use a file path plugin entry if installs are blocked:
 
 ### "No available API key accounts"
 
-You are using a non-Codex OpenAI model, but no usable API accounts exist.
+You selected an API-routed model (for example a `(API)` picker entry or `-api` suffix), but no usable API accounts exist.
 
 Fix:
 
 - Add one with `opencode-multi-auth add-api <alias>`
 - Or connect OpenCode `openai` provider with "Manually enter API Key" (auto-imports)
 
+### "No available OAuth accounts"
+
+You selected an OAuth-routed model (for example a `(OAuth)` picker entry, `-oauth` suffix, or implicit Codex route), but no usable OAuth accounts exist.
+
+Fix:
+
+- Add one with `opencode-multi-auth add <alias>`
+- Re-auth any invalid OAuth aliases
+
 ## How It Works
 
 | Feature | Behavior |
 |---------|----------|
-| **Rotation** | Round-robin within auth pool (`oauth` or `api`) per API call |
-| **Routing** | Codex models use OAuth pool; non-Codex OpenAI models use API-key pool |
-| **Rate Limits** | Auto-skips rate-limited account for 5 min, uses next |
+| **Rotation** | API accounts follow configured strategy (`round-robin` default); OAuth candidates are additionally prioritized by nearest usable quota reset |
+| **Routing** | Route-labeled models (`-oauth`/`-api`) force pool; otherwise Codex defaults to OAuth and non-codex defaults to API |
+| **Rate Limits** | Auto-skips rate-limited account for cooldown (default 5 min), tries next account, and shows local retry toasts on transient 429 exhaustion |
 | **Token Refresh** | Auto-refreshes tokens before expiry |
-| **Models** | Supports Codex model mapping and standard OpenAI models |
+| **Models** | Rewrites picker models with auth labels, supports dual-route aliases, and supports Codex latest-model mapping |
 | **Storage** | `~/.config/opencode-multi-auth/accounts.json` |
 
 ## CLI Commands
