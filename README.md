@@ -48,6 +48,37 @@ If auto-install fails, install manually:
 bun add github:dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
 ```
 
+### Update an Existing Install (Bun)
+
+Update to latest `main`:
+
+```bash
+bun add @dredivaris/opencode-multi-auth-codex@github:dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
+```
+
+Update to a specific commit:
+
+```bash
+bun add @dredivaris/opencode-multi-auth-codex@github:dredivaris/opencode-multi-auth-codex#<commit-sha> --cwd ~/.config/opencode
+```
+
+Verify what is pinned:
+
+```bash
+jq -r '.dependencies["@dredivaris/opencode-multi-auth-codex"]' ~/.config/opencode/package.json
+```
+
+If Bun reports `DependencyLoop`, do a clean re-resolve:
+
+```bash
+bun remove @dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
+rm -f ~/.config/opencode/bun.lock
+rm -rf ~/.config/opencode/node_modules/@dredivaris/opencode-multi-auth-codex
+bun add @dredivaris/opencode-multi-auth-codex@github:dredivaris/opencode-multi-auth-codex#<commit-sha> --cwd ~/.config/opencode
+```
+
+Then fully restart OpenCode.
+
 ### From Source
 
 ```bash
