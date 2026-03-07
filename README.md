@@ -13,6 +13,7 @@ This fork patches the plugin to talk to **ChatGPT Codex backend** (`chatgpt.com/
 **Install from GitHub (recommended for this fork):**
 
 ```bash
+bun remove @dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
 bun add github:dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
 ```
 
@@ -24,7 +25,7 @@ Then set the plugin entry in `~/.config/opencode/opencode.json`:
 }
 ```
 
-If you already installed an older build, re-run the GitHub install command above to override it.
+If you already installed an older build, remove it first and then re-add it with the GitHub install command above.
 
 ## Installation
 
@@ -45,21 +46,31 @@ OpenCode will auto-install on first run.
 If auto-install fails, install manually:
 
 ```bash
+bun remove @dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
 bun add github:dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
 ```
 
 ### Update an Existing Install (Bun)
 
-Update to latest `main`:
+Recommended Bun update flow:
 
 ```bash
+bun remove @dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
+bun add github:dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
+```
+
+If you want the explicit package name form:
+
+```bash
+bun remove @dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
 bun add @dredivaris/opencode-multi-auth-codex@github:dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
 ```
 
-Update to a specific commit:
+Update to a specific ref:
 
 ```bash
-bun add @dredivaris/opencode-multi-auth-codex@github:dredivaris/opencode-multi-auth-codex#<commit-sha> --cwd ~/.config/opencode
+bun remove @dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
+bun add @dredivaris/opencode-multi-auth-codex@github:dredivaris/opencode-multi-auth-codex#<ref> --cwd ~/.config/opencode
 ```
 
 Verify what is pinned:
@@ -74,7 +85,7 @@ If Bun reports `DependencyLoop`, do a clean re-resolve:
 bun remove @dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
 rm -f ~/.config/opencode/bun.lock
 rm -rf ~/.config/opencode/node_modules/@dredivaris/opencode-multi-auth-codex
-bun add @dredivaris/opencode-multi-auth-codex@github:dredivaris/opencode-multi-auth-codex#<commit-sha> --cwd ~/.config/opencode
+bun add @dredivaris/opencode-multi-auth-codex@github:dredivaris/opencode-multi-auth-codex#<ref> --cwd ~/.config/opencode
 ```
 
 Then fully restart OpenCode.
@@ -336,6 +347,7 @@ Fix:
 2) Reinstall:
 
 ```bash
+bun remove @dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
 bun add github:dredivaris/opencode-multi-auth-codex --cwd ~/.config/opencode
 ```
 

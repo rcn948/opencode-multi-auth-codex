@@ -6,12 +6,14 @@ import * as path from 'node:path'
 import { URL } from 'node:url'
 import { exec } from 'node:child_process'
 import { promisify } from 'node:util'
+import { authInvalidRetryMs, recommendAccount } from './account-recommendation.js'
 import { createAuthorizationFlow, loginAccount, refreshToken } from './auth.js'
 import { getCodexAuthPath, getCodexAuthStatus, syncCodexAuthFile, writeCodexAuthForAlias } from './codex-auth.js'
+import { getResetLockIntervalMs, getResetLockState, isResetLockEnabled, runResetLockPass } from './reset-lock.js'
 import { addAccount, getStoreStatus, listAccounts, loadStore, removeAccount, updateAccount } from './store.js'
 import { getRefreshQueueState, startRefreshQueue, stopRefreshQueue } from './refresh-queue.js'
 import { getLogPath, logError, logInfo, readLogTail } from './logger.js'
-import { isOauthAccount, type AccountCredentials, type RateLimitWindow } from './types.js'
+import { isOauthAccount, type AccountCredentials } from './types.js'
 
 const DEFAULT_HOST = '127.0.0.1'
 const DEFAULT_PORT = 3434
@@ -24,6 +26,7 @@ const execAsync = promisify(exec)
 let lastSyncAt = 0
 let lastSyncError: string | null = null
 let syncTimer: NodeJS.Timeout | null = null
+let resetLockTimer: NodeJS.Timeout | null = null
 let pendingLogin: { alias: string; startedAt: number; url: string } | null = null
 let lastLoginError: string | null = null
 let antigravityQuotaState: AntigravityQuotaState = { status: 'idle', scope: 'active' }
@@ -840,6 +843,9 @@ const HTML = `<!doctype html>
                 <div>Last seen: \${acc.lastSeenAt ? formatDate(acc.lastSeenAt) : acc.lastUsed ? formatDate(acc.lastUsed) : 'never'}</div>
                 <div>Last refresh: \${acc.lastRefresh ? formatDate(acc.lastRefresh) : 'unknown'}</div>
                 <div>Usage count: \${acc.usageCount ?? 0}</div>
+                <div>Reset lock: \${acc.resetLockStatus || 'idle'}</div>
+                <div>Last reset lock: \${acc.lastResetLockSuccessAt ? formatDate(acc.lastResetLockSuccessAt) : 'never'}</div>
+                \${acc.resetLockError ? \`<div style="color: var(--danger);">Reset lock error: \${escapeHtml(acc.resetLockError)}</div>\` : ''}
                 \${acc.limitError ? \`<div style="color: var(--danger);">Limit error: \${escapeHtml(acc.limitError)}</div>\` : ''}
               </div>
               <div class="limit-grid">\${limitBlocks || '<span class="notice">No rate-limit data yet.</span>'}</div>
@@ -868,6 +874,7 @@ const HTML = `<!doctype html>
 
       function renderMeta(state) {
         const storeStatus = state.storeStatus
+        const resetLock = state.resetLock || {}
         const storeLine = storeStatus.encrypted
           ? storeStatus.locked ? 'Encrypted (locked)' : 'Encrypted'
           : 'Plain'
@@ -900,8 +907,16 @@ const HTML = `<!doctype html>
             <span>Last sync</span>
             <strong>\${state.lastSyncAt ? formatDate(state.lastSyncAt) : 'never'}</strong>
           </div>
+          <div class="meta-item">
+            <span>Reset lock</span>
+            <strong>\${resetLock.enabled ? (resetLock.running ? 'running' : 'armed') : 'disabled'}</strong>
+          </div>
+          <div class="meta-item">
+            <span>Last anchor</span>
+            <strong style="font-size: 13px;">\${resetLock.lastAnchoredAlias ? escapeHtml(resetLock.lastAnchoredAlias) : 'never'}</strong>
+          </div>
         \`
-        notice.textContent = state.lastSyncError || storeStatus.error || ''
+        notice.textContent = state.lastSyncError || resetLock.lastError || storeStatus.error || ''
       }
 
       function renderLogin(state) {
@@ -1364,184 +1379,6 @@ async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, a
   })
 }
 
-function remainingPercent(window?: RateLimitWindow): number | null {
-  if (!window || typeof window.remaining !== 'number' || typeof window.limit !== 'number') return null
-  if (window.limit === 0) return null
-  return Math.round((window.remaining / window.limit) * 100)
-}
-
-function authInvalidRetryMs(): number {
-  const raw = process.env.OPENCODE_MULTI_AUTH_AUTH_INVALID_RETRY_MS
-  const parsed = raw ? Number(raw) : NaN
-  if (Number.isFinite(parsed) && parsed > 0) return parsed
-  return 10 * 60_000
-}
-
-function formatDurationShort(ms: number): string {
-  const seconds = Math.max(1, Math.ceil(ms / 1000))
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.ceil(seconds / 60)
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.ceil(minutes / 60)
-  if (hours < 48) return `${hours}h`
-  const days = Math.ceil(hours / 24)
-  return `${days}d`
-}
-
-function authState(
-  account: AccountCredentials,
-  now: number
-): { eligible: boolean; retrying: boolean; reason?: string } {
-  if (!account.authInvalid) {
-    return { eligible: true, retrying: false }
-  }
-
-  const invalidatedAt = typeof account.authInvalidatedAt === 'number' ? account.authInvalidatedAt : 0
-  if (!invalidatedAt) {
-    return { eligible: false, retrying: false, reason: 'auth invalid' }
-  }
-
-  const retryAt = invalidatedAt + authInvalidRetryMs()
-  if (retryAt <= now) {
-    return { eligible: true, retrying: true, reason: 'auth retry window reached' }
-  }
-
-  return {
-    eligible: false,
-    retrying: false,
-    reason: `auth invalid (retry in ${formatDurationShort(retryAt - now)})`
-  }
-}
-
-function blockReason(account: AccountCredentials, now: number): string | null {
-  if (account.rateLimitedUntil && account.rateLimitedUntil > now) {
-    return `rate limited (${formatDurationShort(account.rateLimitedUntil - now)})`
-  }
-  if (account.modelUnsupportedUntil && account.modelUnsupportedUntil > now) {
-    return `model unsupported (${formatDurationShort(account.modelUnsupportedUntil - now)})`
-  }
-  if (account.workspaceDeactivatedUntil && account.workspaceDeactivatedUntil > now) {
-    return `workspace deactivated (${formatDurationShort(account.workspaceDeactivatedUntil - now)})`
-  }
-  return null
-}
-
-function oauthRecommendPriority(account: AccountCredentials): { bucket: number; resetAt: number; reason: string } {
-  const weekly = account.rateLimits?.weekly
-  const fiveHour = account.rateLimits?.fiveHour
-
-  const weeklyRemaining = typeof weekly?.remaining === 'number' ? weekly.remaining : undefined
-  const fiveRemaining = typeof fiveHour?.remaining === 'number' ? fiveHour.remaining : undefined
-
-  if (typeof weeklyRemaining === 'number' && weeklyRemaining > 0 && typeof weekly?.resetAt === 'number') {
-    return { bucket: 0, resetAt: weekly.resetAt, reason: 'earliest weekly reset with available quota' }
-  }
-
-  if (typeof fiveRemaining === 'number' && fiveRemaining > 0 && typeof fiveHour?.resetAt === 'number') {
-    return { bucket: 1, resetAt: fiveHour.resetAt, reason: 'earliest 5h reset with available quota' }
-  }
-
-  const hasUnknownAvailable =
-    (typeof weeklyRemaining === 'number' && weeklyRemaining > 0) ||
-    (typeof fiveRemaining === 'number' && fiveRemaining > 0)
-  if (hasUnknownAvailable) {
-    return { bucket: 2, resetAt: Number.POSITIVE_INFINITY, reason: 'quota available but reset time unknown' }
-  }
-
-  const hasWindow = Boolean(weekly || fiveHour)
-  if (!hasWindow) {
-    return { bucket: 3, resetAt: Number.POSITIVE_INFINITY, reason: 'no quota metadata yet' }
-  }
-
-  return { bucket: 4, resetAt: Number.POSITIVE_INFINITY, reason: 'quota exhausted' }
-}
-
-type RecommendationResult = {
-  alias: string | null
-  reason?: string
-  skippedReasons: Record<string, string>
-}
-
-function recommendAccount(accounts: AccountCredentials[]): RecommendationResult {
-  const now = Date.now()
-  const skippedReasons: Record<string, string> = {}
-
-  const oauthCandidates = accounts.filter((account) =>
-    account.authType === 'oauth'
-  )
-
-  const eligibleOauth = oauthCandidates.filter((account) => {
-    const auth = authState(account, now)
-    if (!auth.eligible) {
-      skippedReasons[account.alias] = auth.reason || 'auth invalid'
-      return false
-    }
-    const blocked = blockReason(account, now)
-    if (blocked) {
-      skippedReasons[account.alias] = blocked
-      return false
-    }
-    return true
-  })
-
-  if (eligibleOauth.length > 0) {
-    const ranked = [...eligibleOauth].sort((a, b) => {
-      const pa = oauthRecommendPriority(a)
-      const pb = oauthRecommendPriority(b)
-      if (pa.bucket !== pb.bucket) return pa.bucket - pb.bucket
-      if (pa.resetAt !== pb.resetAt) return pa.resetAt - pb.resetAt
-      return a.alias.localeCompare(b.alias)
-    })
-
-    const selected = ranked[0]
-    if (!selected) {
-      return { alias: null, reason: 'no eligible oauth account', skippedReasons }
-    }
-
-    const pr = oauthRecommendPriority(selected)
-    const resetNote = Number.isFinite(pr.resetAt)
-      ? ` (reset ${new Date(pr.resetAt).toLocaleString()})`
-      : ''
-    return {
-      alias: selected.alias,
-      reason: `${pr.reason}${resetNote}`,
-      skippedReasons
-    }
-  }
-
-  let best: { alias: string; score: number } | null = null
-  for (const account of accounts) {
-    const auth = authState(account, now)
-    if (!auth.eligible) {
-      skippedReasons[account.alias] = auth.reason || 'auth invalid'
-      continue
-    }
-    const blocked = blockReason(account, now)
-    if (blocked) {
-      skippedReasons[account.alias] = blocked
-      continue
-    }
-    const fiveRaw = remainingPercent(account.rateLimits?.fiveHour)
-    const weeklyRaw = remainingPercent(account.rateLimits?.weekly)
-    if (fiveRaw === null && weeklyRaw === null) {
-      continue
-    }
-    const five = fiveRaw ?? 0
-    const weekly = weeklyRaw ?? 0
-    const expiresInDays = account.expiresAt ? (account.expiresAt - now) / (24 * 3600 * 1000) : 30
-    const expiryPenalty = expiresInDays < 3 ? 20 : expiresInDays < 7 ? 10 : 0
-    const score = five * 2 + weekly - expiryPenalty
-    if (!best || score > best.score) {
-      best = { alias: account.alias, score }
-    }
-  }
-  return {
-    alias: best?.alias ?? null,
-    reason: best ? 'fallback by remaining quota score' : 'no eligible account with quota data',
-    skippedReasons
-  }
-}
-
 function runSync(): void {
   try {
     const result = syncCodexAuthFile()
@@ -1997,12 +1834,29 @@ function startAuthWatcher(): void {
   })
 }
 
+function startResetLockWatcher(): void {
+  if (resetLockTimer) return
+  if (!isResetLockEnabled()) {
+    logInfo('reset-lock disabled')
+    return
+  }
+
+  const runPass = () => {
+    if (getRefreshQueueState()?.running || pendingLogin) return
+    void runResetLockPass()
+  }
+
+  resetLockTimer = setInterval(runPass, getResetLockIntervalMs())
+  runPass()
+}
+
 export function startWebConsole(options?: { port?: number; host?: string }): http.Server {
   const host = options?.host || DEFAULT_HOST
   const port = options?.port || DEFAULT_PORT
 
   runSync()
   startAuthWatcher()
+  startResetLockWatcher()
 
   const server = http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url || '/', `http://${host}:${port}`)
@@ -2033,6 +1887,7 @@ export function startWebConsole(options?: { port?: number; host?: string }): htt
         lastLoginError,
         antigravity: { ...antigravity, quota: antigravityQuotaState },
         queue: getRefreshQueueState(),
+        resetLock: getResetLockState(),
         recommendedAlias: recommendation.alias,
         recommendedReason: recommendation.reason,
         skippedReasons: recommendation.skippedReasons,

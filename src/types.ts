@@ -36,6 +36,12 @@ export interface AccountCredentials {
   limitError?: string
   lastLimitProbeAt?: number
   lastLimitErrorAt?: number
+  resetLockStatus?: ResetLockStatus
+  lastResetLockAttemptAt?: number
+  lastResetLockSuccessAt?: number
+  lastResetLockErrorAt?: number
+  lastResetLockWindowResetAt?: number
+  resetLockError?: string
   tags?: string[]
   notes?: string
   source?: 'opencode' | 'codex'
@@ -101,6 +107,8 @@ export interface RateLimitHistoryEntry {
 }
 
 export type LimitStatus = 'idle' | 'queued' | 'running' | 'success' | 'error' | 'stopped'
+
+export type ResetLockStatus = 'idle' | 'pending' | 'probing' | 'anchoring' | 'anchored' | 'error'
 
 // Local store for all accounts
 export interface AccountStore {
