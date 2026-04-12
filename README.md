@@ -130,7 +130,7 @@ The plugin rewrites OpenCode's `openai` model list with route-labeled entries.
 
 - Codex models get both `(API)` and `(OAuth)` variants
 - Non-codex models are API by default
-- Some non-codex models are dual-route by default (`gpt-5`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-pro`)
+- Some non-codex models are dual-route by default (`gpt-5`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-pro`)
 
 Route selection rules:
 
@@ -315,7 +315,7 @@ Default behavior:
 Environment variables:
 - `OPENCODE_MULTI_AUTH_PREFER_CODEX_LATEST=0` disables the mapping (use exact model).
 - `OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL=gpt-5.3-codex` overrides the target model.
-- `OPENCODE_MULTI_AUTH_DUAL_ROUTE_MODELS=gpt-5,gpt-5.1,gpt-5.2,gpt-5.4,gpt-5.4-pro` sets which non-codex models get both API/OAuth variants in the picker.
+- `OPENCODE_MULTI_AUTH_DUAL_ROUTE_MODELS=gpt-5,gpt-5.1,gpt-5.2,gpt-5.4,gpt-5.4-mini,gpt-5.4-pro` sets which non-codex models get both API/OAuth variants in the picker.
 - `OPENCODE_MULTI_AUTH_INJECT_MODELS=1` injects the latest Codex model into the routed model map if OpenCode cache does not include it yet.
 - `OPENCODE_MULTI_AUTH_DEBUG=1` prints mapping logs like: `model map: gpt-5.2-codex -> gpt-5.3-codex`.
 

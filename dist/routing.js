@@ -152,7 +152,7 @@ function stripAuthLabel(name) {
     return name.replace(/\s*\((oauth|api)\)$/i, '').trim();
 }
 function dualRouteModelIDs() {
-    const raw = (process.env.OPENCODE_MULTI_AUTH_DUAL_ROUTE_MODELS || 'gpt-5,gpt-5.1,gpt-5.2,gpt-5.4,gpt-5.4-pro').trim();
+    const raw = (process.env.OPENCODE_MULTI_AUTH_DUAL_ROUTE_MODELS || 'gpt-5,gpt-5.1,gpt-5.2,gpt-5.4,gpt-5.4-mini,gpt-5.4-pro').trim();
     const ids = raw
         .split(',')
         .map((x) => x.trim())

@@ -96,6 +96,19 @@ test('rewriteOpenAIModelsForRouting creates API and OAuth aliases for dual model
     assert.equal(rewritten['gpt-5.2-codex-api'].options?.opencodeMultiAuthRoute, 'api');
     assert.equal(rewritten['gpt-5.2-codex-oauth'].options?.opencodeMultiAuthRoute, 'oauth');
 });
+test('rewriteOpenAIModelsForRouting dual-routes gpt-5.4-mini', () => {
+    const rewritten = rewriteOpenAIModelsForRouting({
+        'gpt-5.4-mini': {
+            id: 'gpt-5.4-mini',
+            name: 'GPT 5.4 Mini'
+        }
+    });
+    assert.deepEqual(Object.keys(rewritten).sort(), ['gpt-5.4-mini-api', 'gpt-5.4-mini-oauth']);
+    assert.equal(rewritten['gpt-5.4-mini-api'].name, 'GPT 5.4 Mini (API)');
+    assert.equal(rewritten['gpt-5.4-mini-oauth'].name, 'GPT 5.4 Mini (OAuth)');
+    assert.equal(rewritten['gpt-5.4-mini-api'].options?.opencodeMultiAuthRoute, 'api');
+    assert.equal(rewritten['gpt-5.4-mini-oauth'].options?.opencodeMultiAuthRoute, 'oauth');
+});
 test('rewriteOpenAIModelsForRouting is stable for already routed dual model maps', () => {
     const rewritten = rewriteOpenAIModelsForRouting({
         'gpt-5.2-api': {

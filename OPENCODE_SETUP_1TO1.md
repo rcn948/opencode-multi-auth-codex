@@ -253,7 +253,7 @@ Routing behavior:
 - `-oauth` models (or `(OAuth)` picker entries) use OAuth rotation.
 - `-api` models (or `(API)` picker entries) use API-key rotation.
 - Without explicit route labels: codex models default to OAuth, non-codex models default to API.
-- Codex models are exposed as both API and OAuth variants; some non-codex models are also dual-route (`gpt-5`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-pro`).
+- Codex models are exposed as both API and OAuth variants; some non-codex models are also dual-route (`gpt-5`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-pro`).
 - OAuth account selection is quota-reset aware (nearest usable reset first); API follows configured strategy.
 
 ## Codex 5.3 Mapping (How to Use the Newest Codex)
@@ -268,7 +268,7 @@ Env vars:
 
 - `OPENCODE_MULTI_AUTH_PREFER_CODEX_LATEST=0` disables mapping.
 - `OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL=gpt-5.3-codex` overrides target.
-- `OPENCODE_MULTI_AUTH_DUAL_ROUTE_MODELS=gpt-5,gpt-5.1,gpt-5.2,gpt-5.4,gpt-5.4-pro` controls non-codex dual-route variants.
+- `OPENCODE_MULTI_AUTH_DUAL_ROUTE_MODELS=gpt-5,gpt-5.1,gpt-5.2,gpt-5.4,gpt-5.4-mini,gpt-5.4-pro` controls non-codex dual-route variants.
 - `OPENCODE_MULTI_AUTH_DEBUG=1` prints mapping logs.
 
 ### Verify mapping works

@@ -124,7 +124,7 @@ Picker behavior:
 
 - Codex models are exposed as both `(API)` and `(OAuth)` variants
 - Non-codex models are API-labeled by default
-- Some non-codex models are dual-route by default (`gpt-5`, `gpt-5.1`, `gpt-5.2`)
+- Some non-codex models are dual-route by default (`gpt-5`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-pro`)
 
 Rotation behavior:
 
@@ -165,7 +165,7 @@ Note: API accounts do not write into `~/.codex/auth.json`.
 - `OPENCODE_MULTI_AUTH_DEBUG=1` enable extra debug logging
 - `OPENCODE_MULTI_AUTH_PREFER_CODEX_LATEST=0` disable `gpt-5.2-codex` -> latest codex mapping
 - `OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL=gpt-5.3-codex` override mapped latest codex target
-- `OPENCODE_MULTI_AUTH_DUAL_ROUTE_MODELS=gpt-5,gpt-5.1,gpt-5.2` choose non-codex models that get both API/OAuth picker variants
+- `OPENCODE_MULTI_AUTH_DUAL_ROUTE_MODELS=gpt-5,gpt-5.1,gpt-5.2,gpt-5.4,gpt-5.4-mini,gpt-5.4-pro` choose non-codex models that get both API/OAuth picker variants
 - `OPENCODE_MULTI_AUTH_INJECT_MODELS=1` inject latest codex model into routed model map when missing from OpenCode cache
 - `OPENCODE_MULTI_AUTH_REQUEST_TIMEOUT_MS=45000` request timeout override
 - `OPENCODE_MULTI_AUTH_LOCAL_429_RETRIES=2` local retries when all accounts in chosen pool are cooling down

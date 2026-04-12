@@ -20,6 +20,7 @@ function setupEnv(): { cleanup: () => void } {
             'gpt-5.2': { id: 'gpt-5.2', name: 'GPT 5.2' },
             'gpt-5.2-pro': { id: 'gpt-5.2-pro', name: 'GPT 5.2 Pro' },
             'gpt-5.4': { id: 'gpt-5.4', name: 'GPT 5.4' },
+            'gpt-5.4-mini': { id: 'gpt-5.4-mini', name: 'GPT 5.4 Mini' },
             'gpt-5.2-codex': { id: 'gpt-5.2-codex', name: 'GPT 5.2 Codex' }
           }
         }
@@ -116,6 +117,12 @@ test('auth loader rewrites provider models in place with API/OAuth labels', asyn
     assert.equal(provider.models['gpt-5.4-oauth'].name, 'GPT 5.4 (OAuth)')
     assert.equal(provider.models['gpt-5.4-api'].options?.opencodeMultiAuthRoute, 'api')
     assert.equal(provider.models['gpt-5.4-oauth'].options?.opencodeMultiAuthRoute, 'oauth')
+    assert.ok(provider.models['gpt-5.4-mini-api'])
+    assert.ok(provider.models['gpt-5.4-mini-oauth'])
+    assert.equal(provider.models['gpt-5.4-mini-api'].name, 'GPT 5.4 Mini (API)')
+    assert.equal(provider.models['gpt-5.4-mini-oauth'].name, 'GPT 5.4 Mini (OAuth)')
+    assert.equal(provider.models['gpt-5.4-mini-api'].options?.opencodeMultiAuthRoute, 'api')
+    assert.equal(provider.models['gpt-5.4-mini-oauth'].options?.opencodeMultiAuthRoute, 'oauth')
     assert.ok(provider.models['gpt-5.2-codex-api'])
     assert.ok(provider.models['gpt-5.2-codex-oauth'])
     assert.equal(provider.models['gpt-5.2-codex-api'].name, 'GPT 5.2 Codex (API)')
