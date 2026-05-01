@@ -33,7 +33,7 @@ const HTML = `<!doctype html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Codex Token Dashboard</title>
+    <title data-i18n="title">Codex Token Dashboard</title>
     <style>
       @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
 
@@ -431,7 +431,10 @@ const HTML = `<!doctype html>
   </head>
   <body>
     <header>
-      <h1>Codex Token Dashboard</h1>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <h1 data-i18n="title">Codex Token Dashboard</h1>
+        <button id="langBtn" class="secondary" onclick="toggleLang()" style="padding: 6px 12px; font-size: 13px; white-space:nowrap;">🇺🇸 EN</button>
+      </div>
       <div class="subtitle">Local console for ~/.codex/auth.json with manual limit refresh.</div>
     </header>
     <div class="container">
@@ -440,7 +443,7 @@ const HTML = `<!doctype html>
       </section>
       <section class="panel">
         <div class="actions">
-          <button id="syncBtn">Sync auth.json</button>
+          <button id="syncBtn" data-i18n="syncBtn">Sync auth.json</button>
           <button class="secondary" id="refreshTokensBtn">Refresh tokens (all)</button>
           <button class="secondary" id="refreshLimitsBtn">Refresh limits (all)</button>
           <button class="secondary" id="refreshBtn">Refresh UI</button>
@@ -463,11 +466,11 @@ const HTML = `<!doctype html>
           <input id="searchInput" placeholder="Search alias / email / tags / notes" />
           <input id="tagInput" placeholder="Filter tags (comma separated)" />
           <select id="sortSelect">
-            <option value="recommended">Sort: Recommended first</option>
-            <option value="fiveHour">Sort: 5h remaining</option>
-            <option value="weekly">Sort: Weekly remaining</option>
-            <option value="expiry">Sort: Expiry soon</option>
-            <option value="refresh">Sort: Last refresh</option>
+            <option value="recommended" data-i18n="sortRecommended">Sort: Recommended first</option>
+            <option value="fiveHour" data-i18n="sortFiveHour">Sort: 5h remaining</option>
+            <option value="weekly" data-i18n="sortWeekly">Sort: Weekly remaining</option>
+            <option value="expiry" data-i18n="sortExpiry">Sort: Expiry soon</option>
+            <option value="refresh" data-i18n="sortRefresh">Sort: Last refresh</option>
             <option value="alias">Sort: Alias</option>
           </select>
           <button class="secondary" id="clearFiltersBtn">Clear filters</button>
@@ -497,7 +500,7 @@ const HTML = `<!doctype html>
       <section class="panel">
         <div class="logs-header">
           <div>
-            <div style="font-size: 16px; font-weight: 600;">Logs</div>
+            <div style="font-size: 16px; font-weight: 600;" data-i18n="logs">Logs</div>
             <div class="notice" id="logPath"></div>
           </div>
           <button class="secondary" id="refreshLogsBtn">Refresh logs</button>
@@ -507,6 +510,80 @@ const HTML = `<!doctype html>
     </div>
     <div class="toast" id="toast"></div>
     <script>
+      const TRANSLATIONS = {
+        en: {
+          title: 'Codex Token Dashboard',
+          syncBtn: 'Sync auth.json',
+          sortRecommended: 'Sort: Recommended first',
+          sortFiveHour: 'Sort: 5h remaining',
+          sortWeekly: 'Sort: Weekly remaining',
+          sortExpiry: 'Sort: Expiry soon',
+          sortRefresh: 'Sort: Last refresh',
+          logs: 'Logs',
+          accounts: 'Accounts',
+          recommendationReason: 'Recommendation reason',
+          store: 'Store',
+          lastSync: 'Last sync',
+          resetLock: 'Reset lock',
+          lastAnchor: 'Last anchor',
+          usageCount: 'Usage count:',
+          resetLockColon: 'Reset lock:',
+          remaining: 'Remaining:',
+          reset: 'Reset:',
+          updated: 'Updated:',
+          promptCredits: 'Prompt credits',
+        },
+        ko: {
+          title: 'Codex 토큰 대시보드',
+          syncBtn: 'auth.json 동기화',
+          sortRecommended: '정렬: 추천 순',
+          sortFiveHour: '정렬: 5시간 잔여 순',
+          sortWeekly: '정렬: 주간 잔여 순',
+          sortExpiry: '정렬: 만료 임박 순',
+          sortRefresh: '정렬: 최근 갱신 순',
+          logs: '로그',
+          accounts: '계정',
+          recommendationReason: '추천 이유',
+          store: '저장소',
+          lastSync: '마지막 동기화',
+          resetLock: '리셋 잠금',
+          lastAnchor: '마지막 앵커',
+          usageCount: '사용 횟수:',
+          resetLockColon: '리셋 잠금:',
+          remaining: '잔여:',
+          reset: '리셋:',
+          updated: '업데이트:',
+          promptCredits: '프롬프트 크레딧',
+        }
+      }
+
+      let currentLang = localStorage.getItem('lang') || (navigator.language.startsWith('ko') ? 'ko' : 'en')
+
+      function t(key) {
+        return (TRANSLATIONS[currentLang] || TRANSLATIONS.en)[key] || key
+      }
+
+      function applyTranslations() {
+        document.querySelectorAll('[data-i18n]').forEach(function(el) {
+          const key = el.getAttribute('data-i18n')
+          el.textContent = t(key)
+        })
+        const langBtn = document.getElementById('langBtn')
+        if (langBtn) {
+          langBtn.textContent = currentLang === 'ko' ? '🇰🇷 KO' : '🇺🇸 EN'
+        }
+      }
+
+      function toggleLang() {
+        currentLang = currentLang === 'ko' ? 'en' : 'ko'
+        localStorage.setItem('lang', currentLang)
+        applyTranslations()
+        if (typeof latestState !== 'undefined' && latestState) {
+          renderMeta(latestState)
+          renderAccounts(latestState)
+        }
+      }
+
       const metaEl = document.getElementById('meta')
       const accountsEl = document.getElementById('accounts')
       const syncBtn = document.getElementById('syncBtn')
@@ -613,9 +690,9 @@ const HTML = `<!doctype html>
         return \`
           <div class="limit-card">
             <strong>\${label}</strong>
-            <span>Remaining: \${remainingText}</span><br />
-            <span>Reset: \${reset}</span><br />
-            <span>Updated: \${updated}</span>
+            <span>\${t('remaining')} \${remainingText}</span><br />
+            <span>\${t('reset')} \${reset}</span><br />
+            <span>\${t('updated')} \${updated}</span>
             \${spark}
           </div>
         \`
@@ -838,8 +915,8 @@ const HTML = `<!doctype html>
                 <div>Token expires: \${formatDate(acc.expiresAt)}</div>
                 <div>Last seen: \${acc.lastSeenAt ? formatDate(acc.lastSeenAt) : acc.lastUsed ? formatDate(acc.lastUsed) : 'never'}</div>
                 <div>Last refresh: \${acc.lastRefresh ? formatDate(acc.lastRefresh) : 'unknown'}</div>
-                <div>Usage count: \${acc.usageCount ?? 0}</div>
-                <div>Reset lock: \${acc.resetLockStatus || 'idle'}</div>
+                <div>\${t('usageCount')} \${acc.usageCount ?? 0}</div>
+                <div>\${t('resetLockColon')} \${acc.resetLockStatus || 'idle'}</div>
                 <div>Last reset lock: \${acc.lastResetLockSuccessAt ? formatDate(acc.lastResetLockSuccessAt) : 'never'}</div>
                 \${acc.resetLockError ? \`<div style="color: var(--danger);">Reset lock error: \${escapeHtml(acc.resetLockError)}</div>\` : ''}
                 \${acc.limitError ? \`<div style="color: var(--danger);">Limit error: \${escapeHtml(acc.limitError)}</div>\` : ''}
@@ -876,7 +953,7 @@ const HTML = `<!doctype html>
           : 'Plain'
         metaEl.innerHTML = \`
           <div class="meta-item">
-            <span>Accounts</span>
+            <span>\${t('accounts')}</span>
             <strong>\${state.accounts.length}</strong>
           </div>
           <div class="meta-item">
@@ -888,7 +965,7 @@ const HTML = `<!doctype html>
             <strong>\${state.recommendedAlias || 'n/a'}</strong>
           </div>
           <div class="meta-item">
-            <span>Recommendation reason</span>
+            <span>\${t('recommendationReason')}</span>
             <strong style="font-size: 13px;">\${escapeHtml(state.recommendedReason || 'n/a')}</strong>
           </div>
           <div class="meta-item">
@@ -896,19 +973,19 @@ const HTML = `<!doctype html>
             <strong style="font-size: 13px;">\${state.authPath}</strong>
           </div>
           <div class="meta-item">
-            <span>Store</span>
+            <span>\${t('store')}</span>
             <strong>\${storeLine}</strong>
           </div>
           <div class="meta-item">
-            <span>Last sync</span>
+            <span>\${t('lastSync')}</span>
             <strong>\${state.lastSyncAt ? formatDate(state.lastSyncAt) : 'never'}</strong>
           </div>
           <div class="meta-item">
-            <span>Reset lock</span>
+            <span>\${t('resetLock')}</span>
             <strong>\${resetLock.enabled ? (resetLock.running ? 'running' : 'armed') : 'disabled'}</strong>
           </div>
           <div class="meta-item">
-            <span>Last anchor</span>
+            <span>\${t('lastAnchor')}</span>
             <strong style="font-size: 13px;">\${resetLock.lastAnchoredAlias ? escapeHtml(resetLock.lastAnchoredAlias) : 'never'}</strong>
           </div>
         \`
@@ -999,8 +1076,8 @@ const HTML = `<!doctype html>
             const prompt = snapshot.promptCredits
             const promptCard = prompt ? (
               '<div class="limit-card">' +
-                '<strong>Prompt credits</strong>' +
-                '<span>Remaining: ' + prompt.available + ' / ' + prompt.monthly + '</span><br />' +
+                '<strong>' + t('promptCredits') + '</strong>' +
+                '<span>' + t('remaining') + ' ' + prompt.available + ' / ' + prompt.monthly + '</span><br />' +
                 '<span>Remaining %: ' + Math.round(prompt.remainingPercentage) + '%</span>' +
               '</div>'
             ) : ''
@@ -1012,8 +1089,8 @@ const HTML = `<!doctype html>
               return '' +
                 '<div class="limit-card">' +
                   '<strong>' + escapeHtml(model.label || model.modelId || 'model') + '</strong>' +
-                  '<span>Remaining: ' + remaining + '</span><br />' +
-                  '<span>Reset: ' + reset + '</span>' +
+                  '<span>' + t('remaining') + ' ' + remaining + '</span><br />' +
+                  '<span>' + t('reset') + ' ' + reset + '</span>' +
                 '</div>'
             }).join('')
             const none = !promptCard && !modelCards
@@ -1315,6 +1392,8 @@ const HTML = `<!doctype html>
         sortSelect.value = 'recommended'
         if (latestState) renderAccounts(latestState)
       })
+
+      applyTranslations()
 
       refreshState().catch((err) => {
         console.error(err)
