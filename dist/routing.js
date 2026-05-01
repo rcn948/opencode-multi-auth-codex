@@ -2,7 +2,7 @@ export const CODEX_ORIGIN = 'https://chatgpt.com';
 export const CODEX_BACKEND_PREFIX = '/backend-api';
 export const ROUTE_HINT_OPTION = 'opencodeMultiAuthRoute';
 function stripReasoningSuffix(modelID) {
-    return modelID.replace(/-(?:none|low|medium|high|xhigh)$/, '');
+    return modelID.replace(/-(?:none|low|medium|high|xhigh|fast)$/, '');
 }
 function stripRouteSuffix(modelID) {
     return modelID.replace(/-(?:api|oauth)$/, '');

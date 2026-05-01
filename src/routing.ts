@@ -7,7 +7,7 @@ export const ROUTE_HINT_OPTION = 'opencodeMultiAuthRoute'
 type ProviderModelConfig = Record<string, any>
 
 function stripReasoningSuffix(modelID: string): string {
-  return modelID.replace(/-(?:none|low|medium|high|xhigh)$/, '')
+  return modelID.replace(/-(?:none|low|medium|high|xhigh|fast)$/, '')
 }
 
 function stripRouteSuffix(modelID: string): string {
