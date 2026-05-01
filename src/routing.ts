@@ -129,6 +129,7 @@ export function selectAuthTypeForRequest(model: unknown, requestUrl?: string): A
   const baseModel = stripRouteSuffix(withoutReasoning)
   if (baseModel.includes('codex')) return 'oauth'
   if (requestUrl && requestUrl.includes('/codex/')) return 'oauth'
+  if (/^gpt-5(\.\d+)?(-|$)/.test(baseModel)) return 'oauth'
   return 'api'
 }
 

@@ -7,10 +7,11 @@ import type { AccountCredentials, AccountRateLimits } from './types.js'
 
 const CODEX_HOME_ROOT = path.join(os.homedir(), '.codex-multi')
 const CODEX_CONFIG_PATH = path.join(os.homedir(), '.codex', 'config.toml')
+const CODEX_BIN_ENV = 'OPENCODE_MULTI_AUTH_CODEX_BIN'
 
 const DEFAULT_PROMPT = 'Reply ONLY with OK. Do not run any commands.'
 const EXEC_TIMEOUT_MS = 120_000
-const DEFAULT_PROBE_MODELS = ['gpt-5-codex', 'gpt-5.2-codex', 'gpt-5.3-codex']
+const DEFAULT_PROBE_MODELS = ['gpt-5.5', 'gpt-5-codex', 'gpt-5.2-codex', 'gpt-5.3-codex']
 
 export interface ProbeResult {
   rateLimits?: AccountRateLimits
@@ -83,6 +84,93 @@ function getProbeModels(): string[] {
   return Array.from(new Set(candidates))
 }
 
+function unique(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean)))
+}
+
+function pathDirs(pathValue = process.env.PATH || ''): string[] {
+  return pathValue.split(path.delimiter).filter(Boolean)
+}
+
+function executableNames(name: string): string[] {
+  if (process.platform !== 'win32') return [name]
+
+  const extensions = (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM')
+    .split(';')
+    .map((ext) => ext.trim())
+    .filter(Boolean)
+  return [name, ...extensions.map((ext) => `${name}${ext.toLowerCase()}`), ...extensions.map((ext) => `${name}${ext.toUpperCase()}`)]
+}
+
+function canExecute(filePath: string): boolean {
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function nvmNodeBinDirs(): string[] {
+  const root = path.join(os.homedir(), '.nvm', 'versions', 'node')
+  try {
+    return fs
+      .readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(root, entry.name, 'bin'))
+  } catch {
+    return []
+  }
+}
+
+function commonBinDirs(): string[] {
+  return unique([
+    path.dirname(process.execPath),
+    path.join(os.homedir(), '.bun', 'bin'),
+    path.join(os.homedir(), '.local', 'bin'),
+    path.join(os.homedir(), '.npm-global', 'bin'),
+    ...nvmNodeBinDirs(),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin'
+  ])
+}
+
+function findExecutable(name: string, dirs: string[]): string | undefined {
+  for (const dir of dirs) {
+    for (const executableName of executableNames(name)) {
+      const candidate = path.join(dir, executableName)
+      if (canExecute(candidate)) return candidate
+    }
+  }
+  return undefined
+}
+
+export function resolveCodexExecutable(pathValue = process.env.PATH || ''): { command: string; pathEnv: string } {
+  const configured = (process.env[CODEX_BIN_ENV] || '').trim()
+  const configuredDir = configured ? path.dirname(configured) : ''
+  const dirs = unique([...pathDirs(pathValue), configuredDir, ...commonBinDirs()])
+  const pathEnv = dirs.join(path.delimiter)
+
+  if (configured) {
+    return { command: configured, pathEnv }
+  }
+
+  return { command: findExecutable('codex', dirs) || 'codex', pathEnv }
+}
+
+function formatSpawnError(err: NodeJS.ErrnoException): string {
+  if (err.code !== 'ENOENT') return String(err)
+
+  const configured = (process.env[CODEX_BIN_ENV] || '').trim()
+  if (configured) {
+    return `Executable not found: ${configured}. Check ${CODEX_BIN_ENV}.`
+  }
+
+  return 'Executable not found in PATH or common install locations: "codex". Set OPENCODE_MULTI_AUTH_CODEX_BIN to the full codex executable path.'
+}
+
 async function runCodexExec(
   codexHome: string,
   model?: string
@@ -103,9 +191,10 @@ async function runCodexExec(
 
     let stderr = ''
     let stdout = ''
+    const executable = resolveCodexExecutable()
 
-    const child = spawn('codex', args, {
-      env: { ...process.env, CODEX_HOME: codexHome },
+    const child = spawn(executable.command, args, {
+      env: { ...process.env, PATH: executable.pathEnv, CODEX_HOME: codexHome },
       stdio: ['ignore', 'pipe', 'pipe']
     })
 
@@ -123,9 +212,9 @@ async function runCodexExec(
       if (stderr.length > 4000) stderr = stderr.slice(-4000)
     })
 
-    child.on('error', (err) => {
+    child.on('error', (err: NodeJS.ErrnoException) => {
       clearTimeout(timer)
-      resolve({ ok: false, error: String(err) })
+      resolve({ ok: false, error: formatSpawnError(err) })
     })
 
     child.on('close', (code) => {

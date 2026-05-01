@@ -131,6 +131,8 @@ export function selectAuthTypeForRequest(model, requestUrl) {
         return 'oauth';
     if (requestUrl && requestUrl.includes('/codex/'))
         return 'oauth';
+    if (/^gpt-5(\.\d+)?(-|$)/.test(baseModel))
+        return 'oauth';
     return 'api';
 }
 function resolveRouteHint(value) {

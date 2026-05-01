@@ -82,7 +82,8 @@ export async function getNextAccount(config, options) {
         const invalidatedAt = typeof acc.authInvalidatedAt === 'number' ? acc.authInvalidatedAt : 0;
         const invalidRetryReady = invalidatedAt > 0 && invalidatedAt + authInvalidRetryMs < now;
         const notInvalidated = !acc.authInvalid || invalidRetryReady;
-        return notRateLimited && notModelUnsupported && notWorkspaceDeactivated && notInvalidated;
+        const notLimitError = acc.limitStatus !== 'error';
+        return notRateLimited && notModelUnsupported && notWorkspaceDeactivated && notInvalidated && notLimitError;
     });
     if (availableAliases.length === 0) {
         console.warn('[multi-auth] No available accounts (rate-limited or invalidated).');

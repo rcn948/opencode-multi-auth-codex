@@ -116,6 +116,8 @@ function parseLatestTokenCountFromFile(
     const primary = payload.rate_limits?.primary
     const secondary = payload.rate_limits?.secondary
 
+    if (!primary && !secondary) continue
+
     const fiveHour = isWeekly(primary) ? secondary : primary
     const weekly = isWeekly(primary) ? primary : secondary
 

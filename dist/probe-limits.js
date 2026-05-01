@@ -5,9 +5,10 @@ import { spawn } from 'node:child_process';
 import { findLatestSessionRateLimits } from './sessions-limits.js';
 const CODEX_HOME_ROOT = path.join(os.homedir(), '.codex-multi');
 const CODEX_CONFIG_PATH = path.join(os.homedir(), '.codex', 'config.toml');
+const CODEX_BIN_ENV = 'OPENCODE_MULTI_AUTH_CODEX_BIN';
 const DEFAULT_PROMPT = 'Reply ONLY with OK. Do not run any commands.';
 const EXEC_TIMEOUT_MS = 120_000;
-const DEFAULT_PROBE_MODELS = ['gpt-5-codex', 'gpt-5.2-codex', 'gpt-5.3-codex'];
+const DEFAULT_PROBE_MODELS = ['gpt-5.5', 'gpt-5-codex', 'gpt-5.2-codex', 'gpt-5.3-codex'];
 function ensureDir(dir) {
     if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -65,6 +66,84 @@ function getProbeModels() {
     const candidates = fromEnv.length > 0 ? fromEnv : DEFAULT_PROBE_MODELS;
     return Array.from(new Set(candidates));
 }
+function unique(values) {
+    return Array.from(new Set(values.filter(Boolean)));
+}
+function pathDirs(pathValue = process.env.PATH || '') {
+    return pathValue.split(path.delimiter).filter(Boolean);
+}
+function executableNames(name) {
+    if (process.platform !== 'win32')
+        return [name];
+    const extensions = (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM')
+        .split(';')
+        .map((ext) => ext.trim())
+        .filter(Boolean);
+    return [name, ...extensions.map((ext) => `${name}${ext.toLowerCase()}`), ...extensions.map((ext) => `${name}${ext.toUpperCase()}`)];
+}
+function canExecute(filePath) {
+    try {
+        fs.accessSync(filePath, fs.constants.X_OK);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+function nvmNodeBinDirs() {
+    const root = path.join(os.homedir(), '.nvm', 'versions', 'node');
+    try {
+        return fs
+            .readdirSync(root, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => path.join(root, entry.name, 'bin'));
+    }
+    catch {
+        return [];
+    }
+}
+function commonBinDirs() {
+    return unique([
+        path.dirname(process.execPath),
+        path.join(os.homedir(), '.bun', 'bin'),
+        path.join(os.homedir(), '.local', 'bin'),
+        path.join(os.homedir(), '.npm-global', 'bin'),
+        ...nvmNodeBinDirs(),
+        '/opt/homebrew/bin',
+        '/usr/local/bin',
+        '/usr/bin',
+        '/bin'
+    ]);
+}
+function findExecutable(name, dirs) {
+    for (const dir of dirs) {
+        for (const executableName of executableNames(name)) {
+            const candidate = path.join(dir, executableName);
+            if (canExecute(candidate))
+                return candidate;
+        }
+    }
+    return undefined;
+}
+export function resolveCodexExecutable(pathValue = process.env.PATH || '') {
+    const configured = (process.env[CODEX_BIN_ENV] || '').trim();
+    const configuredDir = configured ? path.dirname(configured) : '';
+    const dirs = unique([...pathDirs(pathValue), configuredDir, ...commonBinDirs()]);
+    const pathEnv = dirs.join(path.delimiter);
+    if (configured) {
+        return { command: configured, pathEnv };
+    }
+    return { command: findExecutable('codex', dirs) || 'codex', pathEnv };
+}
+function formatSpawnError(err) {
+    if (err.code !== 'ENOENT')
+        return String(err);
+    const configured = (process.env[CODEX_BIN_ENV] || '').trim();
+    if (configured) {
+        return `Executable not found: ${configured}. Check ${CODEX_BIN_ENV}.`;
+    }
+    return 'Executable not found in PATH or common install locations: "codex". Set OPENCODE_MULTI_AUTH_CODEX_BIN to the full codex executable path.';
+}
 async function runCodexExec(codexHome, model) {
     return new Promise((resolve) => {
         const args = [
@@ -81,8 +160,9 @@ async function runCodexExec(codexHome, model) {
         args.push(DEFAULT_PROMPT);
         let stderr = '';
         let stdout = '';
-        const child = spawn('codex', args, {
-            env: { ...process.env, CODEX_HOME: codexHome },
+        const executable = resolveCodexExecutable();
+        const child = spawn(executable.command, args, {
+            env: { ...process.env, PATH: executable.pathEnv, CODEX_HOME: codexHome },
             stdio: ['ignore', 'pipe', 'pipe']
         });
         const timer = setTimeout(() => {
@@ -101,7 +181,7 @@ async function runCodexExec(codexHome, model) {
         });
         child.on('error', (err) => {
             clearTimeout(timer);
-            resolve({ ok: false, error: String(err) });
+            resolve({ ok: false, error: formatSpawnError(err) });
         });
         child.on('close', (code) => {
             clearTimeout(timer);
