@@ -93,6 +93,13 @@ function selectCandidate(store, now) {
 async function probeAndPersist(account, deps, now, status) {
     const probe = await deps.probeRateLimitsForAccount(account);
     if (!probe.rateLimits) {
+        if (probe.authInvalid && !account.authInvalid) {
+            deps.updateAccount(account.alias, {
+                authInvalid: true,
+                authInvalidatedAt: now
+            });
+            deps.logError(`reset-lock: auth invalid detected for ${account.alias}; flagging for re-login`);
+        }
         throw new Error(probe.error || 'No rate limit data returned from probe');
     }
     deps.updateAccount(account.alias, {

@@ -16,11 +16,18 @@ export async function refreshRateLimitsForAccount(account: AccountCredentials): 
   const probe = await probeRateLimitsForAccount(account)
   if (!probe.rateLimits) {
     logError(`Limit probe failed for ${account.alias}: ${probe.error || 'Probe failed'}`)
-    updateAccount(account.alias, {
+    const now = Date.now()
+    const updates: Partial<AccountCredentials> = {
       limitStatus: 'error',
       limitError: probe.error || 'Probe failed',
-      lastLimitErrorAt: Date.now()
-    })
+      lastLimitErrorAt: now
+    }
+    if (probe.authInvalid && !account.authInvalid) {
+      updates.authInvalid = true
+      updates.authInvalidatedAt = now
+      logError(`Auth invalid detected for ${account.alias}; flagging for re-login`)
+    }
+    updateAccount(account.alias, updates)
     return {
       alias: account.alias,
       updated: false,
@@ -28,12 +35,17 @@ export async function refreshRateLimitsForAccount(account: AccountCredentials): 
     }
   }
 
-  updateAccount(account.alias, {
+  const successUpdates: Partial<AccountCredentials> = {
     rateLimits: mergeRateLimits(account.rateLimits, probe.rateLimits),
     limitStatus: 'success',
     limitError: undefined,
     lastLimitProbeAt: Date.now()
-  })
+  }
+  if (account.authInvalid) {
+    successUpdates.authInvalid = false
+    successUpdates.authInvalidatedAt = undefined
+  }
+  updateAccount(account.alias, successUpdates)
   return { alias: account.alias, updated: true }
 }
 

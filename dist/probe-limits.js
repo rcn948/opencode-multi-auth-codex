@@ -8,7 +8,12 @@ const CODEX_CONFIG_PATH = path.join(os.homedir(), '.codex', 'config.toml');
 const CODEX_BIN_ENV = 'OPENCODE_MULTI_AUTH_CODEX_BIN';
 const DEFAULT_PROMPT = 'Reply ONLY with OK. Do not run any commands.';
 const EXEC_TIMEOUT_MS = 120_000;
-const DEFAULT_PROBE_MODELS = ['gpt-5.5', 'gpt-5-codex', 'gpt-5.2-codex', 'gpt-5.3-codex'];
+const DEFAULT_PROBE_MODELS = ['gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5-codex', 'gpt-5.5'];
+export function isAuthInvalidErrorMessage(message) {
+    if (!message)
+        return false;
+    return /refresh token was already used|Please log out and sign in again|401 Unauthorized/i.test(message);
+}
 function ensureDir(dir) {
     if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -230,9 +235,10 @@ export async function probeRateLimitsForAccount(account) {
             break;
     }
     if (attemptErrors.length > 0) {
-        return { error: attemptErrors[attemptErrors.length - 1] };
+        const finalError = attemptErrors[attemptErrors.length - 1];
+        return { error: finalError, authInvalid: isAuthInvalidErrorMessage(finalError) };
     }
-    return { error: lastError };
+    return { error: lastError, authInvalid: isAuthInvalidErrorMessage(lastError) };
 }
 export function getProbeHomeRoot() {
     return CODEX_HOME_ROOT;

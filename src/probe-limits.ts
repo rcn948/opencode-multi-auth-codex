@@ -11,13 +11,19 @@ const CODEX_BIN_ENV = 'OPENCODE_MULTI_AUTH_CODEX_BIN'
 
 const DEFAULT_PROMPT = 'Reply ONLY with OK. Do not run any commands.'
 const EXEC_TIMEOUT_MS = 120_000
-const DEFAULT_PROBE_MODELS = ['gpt-5.5', 'gpt-5-codex', 'gpt-5.2-codex', 'gpt-5.3-codex']
+const DEFAULT_PROBE_MODELS = ['gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5-codex', 'gpt-5.5']
 
 export interface ProbeResult {
   rateLimits?: AccountRateLimits
   eventTs?: number
   sourceFile?: string
   error?: string
+  authInvalid?: boolean
+}
+
+export function isAuthInvalidErrorMessage(message: string | undefined): boolean {
+  if (!message) return false
+  return /refresh token was already used|Please log out and sign in again|401 Unauthorized/i.test(message)
 }
 
 function ensureDir(dir: string): void {
@@ -268,10 +274,11 @@ export async function probeRateLimitsForAccount(account: AccountCredentials): Pr
   }
 
   if (attemptErrors.length > 0) {
-    return { error: attemptErrors[attemptErrors.length - 1] }
+    const finalError = attemptErrors[attemptErrors.length - 1]
+    return { error: finalError, authInvalid: isAuthInvalidErrorMessage(finalError) }
   }
 
-  return { error: lastError }
+  return { error: lastError, authInvalid: isAuthInvalidErrorMessage(lastError) }
 }
 
 export function getProbeHomeRoot(): string {
