@@ -25,4 +25,9 @@ export declare function getCodexAuthStatus(): {
     error: string | null;
 };
 export declare function writeCodexAuthForAlias(alias: string): void;
+export declare function getHermesAuthPath(): string;
+export declare function writeHermesCodexAuthForAlias(alias: string): {
+    alias: string;
+    hermesAuthPath: string;
+};
 //# sourceMappingURL=codex-auth.d.ts.map

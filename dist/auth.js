@@ -94,7 +94,10 @@ async function persistOauthAccount(alias, tokens) {
             lastSeenAt: now,
             source: 'opencode',
             authInvalid: false,
-            authInvalidatedAt: undefined
+            authInvalidatedAt: undefined,
+            resetLockStatus: 'idle',
+            resetLockError: undefined,
+            lastResetLockErrorAt: undefined
         });
         return updatedStore.accounts[existingAlias];
     }
@@ -110,7 +113,10 @@ async function persistOauthAccount(alias, tokens) {
         lastSeenAt: now,
         source: 'opencode',
         authInvalid: false,
-        authInvalidatedAt: undefined
+        authInvalidatedAt: undefined,
+        resetLockStatus: 'idle',
+        resetLockError: undefined,
+        lastResetLockErrorAt: undefined
     });
     return createdStore.accounts[targetAlias];
 }
@@ -186,9 +192,50 @@ export async function createAuthorizationFlow() {
     authUrl.searchParams.set('originator', 'codex_cli_rs');
     return { pkce, state, url: authUrl.toString() };
 }
+// Parse the `code` (and optional `state`) out of a redirect callback URL the
+// user pasted, or accept a bare authorization code as-is.
+export function parseAuthCallback(input) {
+    const trimmed = input.trim();
+    if (!trimmed) {
+        throw new Error('Empty callback input');
+    }
+    if (trimmed.includes('code=') || trimmed.includes('://') || trimmed.startsWith('/')) {
+        const parsed = url.parse(trimmed.includes('://') ? trimmed : `http://localhost${trimmed.startsWith('/') ? '' : '/'}${trimmed}`, true);
+        const code = typeof parsed.query.code === 'string' ? parsed.query.code : '';
+        const state = typeof parsed.query.state === 'string' ? parsed.query.state : undefined;
+        if (!code) {
+            throw new Error('No authorization code found in callback URL');
+        }
+        return { code, state };
+    }
+    return { code: trimmed };
+}
+// Exchange an authorization code for tokens and persist the account. Shared by
+// the automatic localhost callback server and the manual paste-URL completion.
+export async function completeAuthorizationFlow(alias, flow, code, returnedState) {
+    if (returnedState && returnedState !== flow.state) {
+        throw new Error('Invalid state');
+    }
+    const tokenRes = await fetch(TOKEN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+            grant_type: 'authorization_code',
+            client_id: CLIENT_ID,
+            code,
+            code_verifier: flow.pkce.verifier,
+            redirect_uri: REDIRECT_URI
+        })
+    });
+    if (!tokenRes.ok) {
+        throw new Error(`Token exchange failed: ${tokenRes.status}`);
+    }
+    const tokens = (await tokenRes.json());
+    return persistOauthAccount(alias, tokens);
+}
 export async function loginAccount(alias, flow) {
     const activeFlow = flow ?? await createAuthorizationFlow();
-    const { pkce, state } = activeFlow;
+    const { state } = activeFlow;
     return new Promise((resolve, reject) => {
         let server = null;
         const cleanup = () => {
@@ -221,23 +268,8 @@ export async function loginAccount(alias, flow) {
                 return;
             }
             try {
-                // Exchange code for tokens
-                const tokenRes = await fetch(TOKEN_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: new URLSearchParams({
-                        grant_type: 'authorization_code',
-                        client_id: CLIENT_ID,
-                        code,
-                        code_verifier: pkce.verifier,
-                        redirect_uri: REDIRECT_URI
-                    })
-                });
-                if (!tokenRes.ok) {
-                    throw new Error(`Token exchange failed: ${tokenRes.status}`);
-                }
-                const tokens = (await tokenRes.json());
-                const account = await persistOauthAccount(alias, tokens);
+                // Exchange code for tokens and persist the account
+                const account = await completeAuthorizationFlow(alias, activeFlow, code, returnedState);
                 res.writeHead(200, { 'Content-Type': 'text/html' });
                 res.end(`
           <html>

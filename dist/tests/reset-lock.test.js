@@ -108,6 +108,41 @@ test('reset lock marks account pending when weekly window has not reset yet', as
     assert.equal(store.accounts.resetme.resetLockStatus, 'pending');
     assert.equal(store.accounts.resetme.lastResetLockSuccessAt, undefined);
 });
+test('reset lock keeps account pending (not error) while usage-limited and backs off until refill', async () => {
+    __resetResetLockStateForTests();
+    const now = Date.now();
+    const store = createStore(now);
+    const resetAt = now + 2 * 24 * 60 * 60 * 1000;
+    const { deps, switchedAliases } = createDeps(store, []);
+    // Override the probe to simulate a "hit your usage limit" response.
+    deps.probeRateLimitsForAccount = async () => ({
+        error: "[model=gpt-5.5] You've hit your usage limit. Upgrade to Pro ... try again at Jun 19th, 2026 9:09 AM.",
+        usageLimited: true,
+        usageLimitResetAt: resetAt
+    });
+    const state = await runResetLockPass(deps);
+    assert.equal(state.lastError, undefined);
+    assert.equal(store.accounts.resetme.resetLockStatus, 'pending');
+    assert.equal(store.accounts.resetme.resetLockError, undefined);
+    assert.equal(store.accounts.resetme.rateLimitedUntil, resetAt);
+    assert.deepEqual(switchedAliases, []);
+});
+test('reset lock flags auth-invalid for re-login without recording a reset-lock error', async () => {
+    __resetResetLockStateForTests();
+    const now = Date.now();
+    const store = createStore(now);
+    const { deps, switchedAliases } = createDeps(store, []);
+    deps.probeRateLimitsForAccount = async () => ({
+        error: '[model=gpt-5.3-codex] refresh token was already used. Please log out and sign in again.',
+        authInvalid: true
+    });
+    const state = await runResetLockPass(deps);
+    assert.equal(state.lastError, undefined);
+    assert.equal(store.accounts.resetme.authInvalid, true);
+    assert.equal(store.accounts.resetme.resetLockStatus, 'pending');
+    assert.equal(store.accounts.resetme.resetLockError, undefined);
+    assert.deepEqual(switchedAliases, []);
+});
 test('reset lock records an error when repeated anchor probes never drop below 100 percent', async () => {
     __resetResetLockStateForTests();
     const now = Date.now();

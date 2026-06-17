@@ -8,11 +8,45 @@ const CODEX_CONFIG_PATH = path.join(os.homedir(), '.codex', 'config.toml');
 const CODEX_BIN_ENV = 'OPENCODE_MULTI_AUTH_CODEX_BIN';
 const DEFAULT_PROMPT = 'Reply ONLY with OK. Do not run any commands.';
 const EXEC_TIMEOUT_MS = 120_000;
-const DEFAULT_PROBE_MODELS = ['gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5-codex', 'gpt-5.5'];
+const DEFAULT_PROBE_MODELS = ['gpt-5.5'];
 export function isAuthInvalidErrorMessage(message) {
     if (!message)
         return false;
     return /refresh token was already used|Please log out and sign in again|401 Unauthorized/i.test(message);
+}
+// A "usage limit" response is not a failure — the account's quota is simply
+// exhausted and has not refilled yet. We treat it as a wait-and-retry signal.
+export function isUsageLimitErrorMessage(message) {
+    if (!message)
+        return false;
+    return /hit your usage limit|usage limit|purchase more credits|Upgrade to Pro/i.test(message);
+}
+const MONTH_INDEX = {
+    jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+    jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
+};
+// Best-effort parse of the reset hint Codex returns, e.g.
+// "try again at Jun 19th, 2026 9:09 AM". Returns a local-time epoch ms or undefined.
+export function parseUsageLimitResetAt(message) {
+    if (!message)
+        return undefined;
+    const match = message.match(/try again at\s+([A-Za-z]{3,})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\s+(\d{1,2}):(\d{2})\s*([AaPp][Mm])?/);
+    if (!match)
+        return undefined;
+    const [, monthStr, dayStr, yearStr, hourStr, minuteStr, meridiem] = match;
+    const month = MONTH_INDEX[monthStr.slice(0, 3).toLowerCase()];
+    if (month === undefined)
+        return undefined;
+    let hour = Number(hourStr);
+    if (meridiem) {
+        const upper = meridiem.toUpperCase();
+        if (upper === 'PM' && hour < 12)
+            hour += 12;
+        if (upper === 'AM' && hour === 12)
+            hour = 0;
+    }
+    const ts = new Date(Number(yearStr), month, Number(dayStr), hour, Number(minuteStr)).getTime();
+    return Number.isFinite(ts) ? ts : undefined;
 }
 function ensureDir(dir) {
     if (!fs.existsSync(dir)) {
@@ -236,9 +270,19 @@ export async function probeRateLimitsForAccount(account) {
     }
     if (attemptErrors.length > 0) {
         const finalError = attemptErrors[attemptErrors.length - 1];
-        return { error: finalError, authInvalid: isAuthInvalidErrorMessage(finalError) };
+        return {
+            error: finalError,
+            authInvalid: isAuthInvalidErrorMessage(finalError),
+            usageLimited: isUsageLimitErrorMessage(finalError),
+            usageLimitResetAt: parseUsageLimitResetAt(finalError)
+        };
     }
-    return { error: lastError, authInvalid: isAuthInvalidErrorMessage(lastError) };
+    return {
+        error: lastError,
+        authInvalid: isAuthInvalidErrorMessage(lastError),
+        usageLimited: isUsageLimitErrorMessage(lastError),
+        usageLimitResetAt: parseUsageLimitResetAt(lastError)
+    };
 }
 export function getProbeHomeRoot() {
     return CODEX_HOME_ROOT;

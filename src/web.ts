@@ -7,8 +7,8 @@ import { URL } from 'node:url'
 import { exec } from 'node:child_process'
 import { promisify } from 'node:util'
 import { authInvalidRetryMs, recommendAccount } from './account-recommendation.js'
-import { createAuthorizationFlow, loginAccount, refreshToken } from './auth.js'
-import { getCodexAuthPath, getCodexAuthStatus, syncCodexAuthFile, writeCodexAuthForAlias } from './codex-auth.js'
+import { completeAuthorizationFlow, createAuthorizationFlow, loginAccount, parseAuthCallback, refreshToken, type AuthorizationFlow } from './auth.js'
+import { getCodexAuthPath, getCodexAuthStatus, getHermesAuthPath, syncCodexAuthFile, writeCodexAuthForAlias, writeHermesCodexAuthForAlias } from './codex-auth.js'
 import { getResetLockIntervalMs, getResetLockState, isResetLockEnabled, runResetLockPass } from './reset-lock.js'
 import { addAccount, getStoreStatus, listAccounts, loadStore, removeAccount, updateAccount } from './store.js'
 import { getRefreshQueueState, startRefreshQueue, stopRefreshQueue } from './refresh-queue.js'
@@ -28,6 +28,10 @@ let lastSyncError: string | null = null
 let syncTimer: NodeJS.Timeout | null = null
 let resetLockTimer: NodeJS.Timeout | null = null
 let pendingLogin: { alias: string; startedAt: number; url: string } | null = null
+// Holds the in-flight OAuth flow (incl. the PKCE verifier) so a login can be
+// completed manually by pasting the callback URL when the automatic localhost
+// callback can't be reached. Kept server-side only — never sent to the client.
+let pendingFlow: AuthorizationFlow | null = null
 let lastLoginError: string | null = null
 let antigravityQuotaState: AntigravityQuotaState = { status: 'idle', scope: 'active' }
 let antigravityQuotaInFlight: Promise<AntigravityQuotaState> | null = null
@@ -464,6 +468,10 @@ const HTML = `<!doctype html>
         <div class="queue" id="queue"></div>
         <div class="notice" id="notice"></div>
         <div class="notice" id="loginNotice"></div>
+        <div class="add-row" id="completeLoginRow" style="display: none;">
+          <input id="completeLoginInput" placeholder="Paste callback URL (http://localhost:1455/auth/callback?code=...)" />
+          <button class="secondary" id="completeLoginBtn">Complete login</button>
+        </div>
       </section>
       <section class="panel">
         <div class="filters">
@@ -536,6 +544,7 @@ const HTML = `<!doctype html>
           reset: 'Reset:',
           updated: 'Updated:',
           promptCredits: 'Prompt credits',
+          relogin: 'Re-login',
         },
         ko: {
           title: 'Codex 토큰 대시보드',
@@ -558,6 +567,7 @@ const HTML = `<!doctype html>
           reset: '리셋:',
           updated: '업데이트:',
           promptCredits: '프롬프트 크레딧',
+          relogin: '재로그인',
         }
       }
 
@@ -937,7 +947,9 @@ const HTML = `<!doctype html>
                 <button class="secondary small" data-action="save-meta" data-alias="\${escapeHtml(acc.alias)}">Save</button>
               </div>
               <div class="card-actions">
-                \${isOauth ? \`<button data-action="switch" data-alias="\${escapeHtml(acc.alias)}">Use on device</button>\` : ''}
+                \${isOauth ? \`<button class="\${acc.authInvalid ? '' : 'secondary'}" data-action="re-login" data-alias="\${escapeHtml(acc.alias)}">\${t('relogin')}</button>\` : ''}
+                \${isOauth ? \`<button data-action="switch" data-alias="\${escapeHtml(acc.alias)}">Use on device + Hermes</button>\` : ''}
+                \${isOauth ? \`<button class="secondary" data-action="use-hermes" data-alias="\${escapeHtml(acc.alias)}">Use in Hermes</button>\` : ''}
                 \${isOauth ? \`<button class="secondary" data-action="refresh-token" data-alias="\${escapeHtml(acc.alias)}">Refresh token</button>\` : ''}
                 \${isOauth ? \`<button class="secondary" data-action="refresh" data-alias="\${escapeHtml(acc.alias)}">Refresh limits</button>\` : ''}
                 <button class="danger" data-action="remove" data-alias="\${escapeHtml(acc.alias)}">Remove</button>
@@ -998,10 +1010,13 @@ const HTML = `<!doctype html>
 
       function renderLogin(state) {
         if (!loginNotice) return
-        if (state.login && state.login.url) {
+        const completeRow = document.getElementById('completeLoginRow')
+        const pending = Boolean(state.login && state.login.url)
+        if (completeRow) completeRow.style.display = pending ? 'flex' : 'none'
+        if (pending) {
           const alias = escapeHtml(state.login.alias || 'account')
           const url = escapeHtml(state.login.url)
-          loginNotice.innerHTML = 'Login in progress for <strong>' + alias + '</strong> — <a href="' + url + '" target="_blank" rel="noreferrer">Open login</a>'
+          loginNotice.innerHTML = 'Login in progress for <strong>' + alias + '</strong> — <a href="' + url + '" target="_blank" rel="noreferrer">Open login</a>. If the browser shows a connection error, paste the resulting URL below to finish.'
           return
         }
         if (state.lastLoginError) {
@@ -1195,9 +1210,34 @@ const HTML = `<!doctype html>
         const action = target.dataset.action
         if (!alias || !action) return
 
+        if (action === 're-login') {
+          try {
+            const result = await api('/api/auth/start', { method: 'POST', body: JSON.stringify({ alias }) })
+            if (result?.url) {
+              if (loginNotice) {
+                const url = escapeHtml(result.url)
+                loginNotice.innerHTML = 'Login in progress for <strong>' + escapeHtml(alias) + '</strong> — <a href="' + url + '" target="_blank" rel="noreferrer">Open login</a>'
+              }
+              window.open(result.url, '_blank', 'noreferrer')
+            }
+            showToast('Re-login started for ' + alias)
+            await refreshState()
+          } catch (err) {
+            showToast('Re-login failed: ' + (err && err.message ? err.message : 'error'))
+          }
+          return
+        }
         if (action === 'switch') {
-          await api('/api/switch', { method: 'POST', body: JSON.stringify({ alias }) })
-          showToast('Switched auth.json')
+          const result = await api('/api/switch', { method: 'POST', body: JSON.stringify({ alias }) })
+          showToast(result && result.hermes === false
+            ? 'On device set (Hermes sync failed)'
+            : 'Set on device + Hermes')
+          await refreshState()
+          return
+        }
+        if (action === 'use-hermes') {
+          const result = await api('/api/hermes/sync', { method: 'POST', body: JSON.stringify({ alias }) })
+          showToast('Synced to Hermes: ' + (result.alias || alias))
           await refreshState()
           return
         }
@@ -1348,6 +1388,33 @@ const HTML = `<!doctype html>
         addAccountBtn.addEventListener('click', startLogin)
         addAliasInput.addEventListener('keydown', (event) => {
           if (event.key === 'Enter') startLogin()
+        })
+      }
+
+      const completeLoginBtn = document.getElementById('completeLoginBtn')
+      const completeLoginInput = document.getElementById('completeLoginInput')
+      if (completeLoginBtn && completeLoginInput) {
+        const completeLogin = async () => {
+          const value = completeLoginInput.value.trim()
+          if (!value) {
+            showToast('Paste the callback URL first')
+            return
+          }
+          try {
+            const result = await api('/api/auth/complete', {
+              method: 'POST',
+              body: JSON.stringify({ url: value })
+            })
+            completeLoginInput.value = ''
+            showToast('Login completed: ' + (result.alias || ''))
+            await refreshState()
+          } catch (err) {
+            showToast('Complete failed: ' + (err && err.message ? err.message : 'error'))
+          }
+        }
+        completeLoginBtn.addEventListener('click', completeLogin)
+        completeLoginInput.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') completeLogin()
         })
       }
 
@@ -1957,6 +2024,7 @@ export function startWebConsole(options?: { port?: number; host?: string }): htt
       const antigravity = loadAntigravityAccounts()
       sendJson(res, 200, {
         authPath: getCodexAuthPath(),
+        hermesAuthPath: getHermesAuthPath(),
         currentAlias: store.activeAlias,
         accounts,
         lastSyncAt,
@@ -2009,21 +2077,60 @@ export function startWebConsole(options?: { port?: number; host?: string }): htt
       try {
         const flow = await createAuthorizationFlow()
         pendingLogin = { alias, startedAt: Date.now(), url: flow.url }
+        pendingFlow = flow
         lastLoginError = null
+        // Run the automatic localhost callback server. If it can't be reached
+        // (timeout, restart, unreachable port) the user can finish via
+        // /api/auth/complete instead. Guard against this stale promise
+        // clobbering state once the flow has been superseded or completed.
         loginAccount(alias, flow)
           .then(() => {
+            if (pendingFlow !== flow) return
             logInfo(`Login completed for ${alias}`)
             pendingLogin = null
+            pendingFlow = null
           })
           .catch((err) => {
+            if (pendingFlow !== flow) return
             lastLoginError = String(err)
             logError(`Login failed for ${alias}: ${err}`)
             pendingLogin = null
+            pendingFlow = null
           })
         sendJson(res, 200, { ok: true, url: flow.url })
       } catch (err) {
         lastLoginError = String(err)
         sendJson(res, 500, { error: String(err) })
+      }
+      return
+    }
+
+    if (req.method === 'POST' && path === '/api/auth/complete') {
+      const body = await readJsonBody(req)
+      const input = typeof body.url === 'string' ? body.url : typeof body.code === 'string' ? body.code : ''
+      if (!input.trim()) {
+        sendJson(res, 400, { error: 'Missing callback URL or code' })
+        return
+      }
+      if (!pendingLogin || !pendingFlow) {
+        sendJson(res, 409, { error: 'No login in progress. Start a re-login first.' })
+        return
+      }
+      const flow = pendingFlow
+      const alias = pendingLogin.alias
+      try {
+        const { code, state } = parseAuthCallback(input)
+        const account = await completeAuthorizationFlow(alias, flow, code, state)
+        // Supersede the automatic callback server's stale promise.
+        pendingLogin = null
+        pendingFlow = null
+        lastLoginError = null
+        logInfo(`Login completed manually for ${alias}`)
+        sendJson(res, 200, { ok: true, alias: account.alias, email: account.email })
+      } catch (err) {
+        lastLoginError = String(err)
+        logError(`Manual login completion failed for ${alias}: ${err}`)
+        sendJson(res, 400, { error: String(err) })
       }
       return
     }
@@ -2083,7 +2190,33 @@ export function startWebConsole(options?: { port?: number; host?: string }): htt
           return
         }
         writeCodexAuthForAlias(body.alias)
-        sendJson(res, 200, { ok: true })
+        // Keep Hermes in sync with the on-device account. A Hermes failure
+        // should not block the on-device switch, so report it without throwing.
+        let hermes = false
+        let hermesError: string | undefined
+        try {
+          writeHermesCodexAuthForAlias(String(body.alias))
+          hermes = true
+        } catch (err) {
+          hermesError = String(err)
+          logError(`Hermes sync during switch failed for ${body.alias}: ${err}`)
+        }
+        sendJson(res, 200, { ok: true, hermes, hermesError })
+      } catch (err) {
+        sendJson(res, 400, { error: String(err) })
+      }
+      return
+    }
+
+    if (req.method === 'POST' && path === '/api/hermes/sync') {
+      const body = await readJsonBody(req)
+      if (!body.alias) {
+        sendJson(res, 400, { error: 'Missing alias' })
+        return
+      }
+      try {
+        const result = writeHermesCodexAuthForAlias(String(body.alias))
+        sendJson(res, 200, { ok: true, ...result })
       } catch (err) {
         sendJson(res, 400, { error: String(err) })
       }

@@ -52,6 +52,32 @@ let runtimeState: ResetLockRuntimeState = {
   running: false
 }
 
+// Base for probe outcomes that are expected states rather than failures, so the
+// reset-lock pass should NOT surface them as a "Reset lock error".
+class SoftResetLockSkip extends Error {}
+
+// Raised when a probe reports the account's quota is exhausted but not yet
+// refilled. This is an expected wait state, so callers keep the account
+// 'pending' and retry once the quota resets.
+class UsageLimitedError extends SoftResetLockSkip {
+  resetAt?: number
+  constructor(message: string, resetAt?: number) {
+    super(message)
+    this.name = 'UsageLimitedError'
+    this.resetAt = resetAt
+  }
+}
+
+// Raised when a probe reports the account's auth is invalid (refresh token
+// revoked / session ended). The account is flagged for re-login via the
+// `authInvalid` badge — it is not a reset-lock failure.
+class AuthInvalidError extends SoftResetLockSkip {
+  constructor(message: string) {
+    super(message)
+    this.name = 'AuthInvalidError'
+  }
+}
+
 function envNumber(name: string, fallback: number): number {
   const raw = process.env[name]
   const parsed = raw ? Number(raw) : NaN
@@ -93,6 +119,9 @@ function isResetDue(account: AccountCredentials, now: number): boolean {
   const resetAt = getWeeklyResetAt(account)
   if (!resetAt) return false
   if (now < resetAt - RESET_LOOKAHEAD_MS) return false
+  // If the account is still inside a known usage-limit window, there is nothing
+  // to gain by probing — back off until the quota is expected to refill.
+  if (typeof account.rateLimitedUntil === 'number' && account.rateLimitedUntil > now) return false
   const lastAttemptAt = typeof account.lastResetLockAttemptAt === 'number' ? account.lastResetLockAttemptAt : 0
   if (lastAttemptAt > 0 && lastAttemptAt + RESET_RETRY_MS > now) return false
   return true
@@ -127,12 +156,38 @@ async function probeAndPersist(
 ): Promise<AccountCredentials> {
   const probe = await deps.probeRateLimitsForAccount(account)
   if (!probe.rateLimits) {
-    if (probe.authInvalid && !account.authInvalid) {
+    if (probe.usageLimited) {
+      // Quota exhausted but not refilled yet. Not an error — stay pending and
+      // back off until the reset time so the account is picked up once refilled.
       deps.updateAccount(account.alias, {
-        authInvalid: true,
-        authInvalidatedAt: now
+        resetLockStatus: 'pending',
+        resetLockError: undefined,
+        lastResetLockErrorAt: undefined,
+        lastLimitProbeAt: now,
+        ...(typeof probe.usageLimitResetAt === 'number'
+          ? { rateLimitedUntil: probe.usageLimitResetAt }
+          : {})
       })
-      deps.logError(`reset-lock: auth invalid detected for ${account.alias}; flagging for re-login`)
+      const when = typeof probe.usageLimitResetAt === 'number'
+        ? ` (retry after ${new Date(probe.usageLimitResetAt).toLocaleString()})`
+        : ''
+      deps.logInfo(`reset-lock: ${account.alias} still usage-limited; awaiting quota refill${when}`)
+      throw new UsageLimitedError(`Usage limit not yet reset for ${account.alias}`, probe.usageLimitResetAt)
+    }
+    if (probe.authInvalid) {
+      // Auth is invalid (revoked refresh token / ended session). Flag for
+      // re-login but do NOT record it as a reset-lock error — the account card
+      // already shows an "auth invalid" badge with a re-login button.
+      deps.updateAccount(account.alias, {
+        ...(account.authInvalid ? {} : { authInvalid: true, authInvalidatedAt: now }),
+        resetLockStatus: 'pending',
+        resetLockError: undefined,
+        lastResetLockErrorAt: undefined
+      })
+      if (!account.authInvalid) {
+        deps.logError(`reset-lock: auth invalid detected for ${account.alias}; flagging for re-login`)
+      }
+      throw new AuthInvalidError(`Auth invalid for ${account.alias}; needs re-login`)
     }
     throw new Error(probe.error || 'No rate limit data returned from probe')
   }
@@ -263,16 +318,22 @@ export async function runResetLockPass(customDeps: Partial<ResetLockDeps> = {}):
       }
     }
   } catch (err) {
-    runtimeState.lastError = String(err)
-    const activeAlias = runtimeState.currentAlias
-    if (activeAlias) {
-      deps.updateAccount(activeAlias, {
-        resetLockStatus: 'error',
-        resetLockError: String(err),
-        lastResetLockErrorAt: deps.now()
-      })
+    if (err instanceof SoftResetLockSkip) {
+      // Expected state (quota not refilled yet, or auth needs re-login). The
+      // account is already marked pending; do not surface this as a failure.
+      runtimeState.lastError = undefined
+    } else {
+      runtimeState.lastError = String(err)
+      const activeAlias = runtimeState.currentAlias
+      if (activeAlias) {
+        deps.updateAccount(activeAlias, {
+          resetLockStatus: 'error',
+          resetLockError: String(err),
+          lastResetLockErrorAt: deps.now()
+        })
+      }
+      deps.logError(`reset-lock failed${activeAlias ? ` for ${activeAlias}` : ''}: ${String(err)}`)
     }
-    deps.logError(`reset-lock failed${activeAlias ? ` for ${activeAlias}` : ''}: ${String(err)}`)
   } finally {
     runtimeState.running = false
     runtimeState.currentAlias = undefined

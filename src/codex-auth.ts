@@ -1,3 +1,4 @@
+import * as crypto from 'crypto'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -19,6 +20,8 @@ export interface CodexAuthFile {
 
 const CODEX_DIR = path.join(os.homedir(), '.codex')
 const CODEX_AUTH_FILE = path.join(CODEX_DIR, 'auth.json')
+const HERMES_HOME = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes')
+const HERMES_AUTH_FILE = path.join(HERMES_HOME, 'auth.json')
 
 let lastFingerprint: string | null = null
 let lastAuthError: string | null = null
@@ -200,4 +203,95 @@ export function writeCodexAuthForAlias(alias: string): void {
     lastSeenAt: Date.now(),
     source: 'codex'
   })
+}
+
+function loadHermesAuthStore(): Record<string, any> {
+  if (!fs.existsSync(HERMES_AUTH_FILE)) {
+    return { version: 1, providers: {}, credential_pool: {} }
+  }
+  try {
+    return JSON.parse(fs.readFileSync(HERMES_AUTH_FILE, 'utf-8')) as Record<string, any>
+  } catch (err) {
+    throw new Error(`Failed to parse Hermes auth store: ${err}`)
+  }
+}
+
+function writeHermesAuthStore(authStore: Record<string, any>): void {
+  fs.mkdirSync(path.dirname(HERMES_AUTH_FILE), { recursive: true, mode: 0o700 })
+  fs.writeFileSync(HERMES_AUTH_FILE, JSON.stringify(authStore, null, 2), { mode: 0o600 })
+}
+
+function poolIdForAccessToken(accessToken: string): string {
+  return crypto.createHash('sha256').update(accessToken).digest('hex').slice(0, 6)
+}
+
+export function getHermesAuthPath(): string {
+  return HERMES_AUTH_FILE
+}
+
+export function writeHermesCodexAuthForAlias(alias: string): { alias: string; hermesAuthPath: string } {
+  const store = loadStore()
+  const account = store.accounts[alias]
+
+  if (!account) {
+    throw new Error(`Unknown alias: ${alias}`)
+  }
+  if (!isOauthAccount(account) || !account.idToken || !account.accessToken || !account.refreshToken) {
+    throw new Error('Hermes sync is only supported for OAuth accounts with complete token data')
+  }
+
+  const now = new Date().toISOString()
+  const authStore = loadHermesAuthStore()
+  if (!authStore.version) authStore.version = 1
+  if (!authStore.providers || typeof authStore.providers !== 'object') authStore.providers = {}
+  if (!authStore.credential_pool || typeof authStore.credential_pool !== 'object') authStore.credential_pool = {}
+
+  authStore.providers['openai-codex'] = {
+    ...(authStore.providers['openai-codex'] || {}),
+    tokens: {
+      id_token: account.idToken,
+      access_token: account.accessToken,
+      refresh_token: account.refreshToken,
+      account_id: account.accountId
+    },
+    last_refresh: account.lastRefresh || now,
+    auth_mode: 'oauth'
+  }
+  authStore.updated_at = now
+
+  const entry = {
+    id: poolIdForAccessToken(account.accessToken),
+    label: alias || 'device_code',
+    auth_type: 'oauth',
+    priority: 0,
+    source: 'device_code',
+    access_token: account.accessToken,
+    refresh_token: account.refreshToken,
+    last_status: null,
+    last_status_at: null,
+    last_error_code: null,
+    last_error_reason: null,
+    last_error_message: null,
+    last_error_reset_at: null,
+    base_url: 'https://chatgpt.com/backend-api/codex',
+    last_refresh: account.lastRefresh || now,
+    request_count: 0
+  }
+  const pool = Array.isArray(authStore.credential_pool['openai-codex'])
+    ? authStore.credential_pool['openai-codex']
+    : []
+  const existingIndex = pool.findIndex((item: any) => item?.source === 'device_code')
+  if (existingIndex >= 0) {
+    pool[existingIndex] = { ...pool[existingIndex], ...entry }
+  } else {
+    pool.unshift(entry)
+  }
+  authStore.credential_pool['openai-codex'] = pool
+
+  writeHermesAuthStore(authStore)
+  updateAccount(alias, {
+    lastSeenAt: Date.now(),
+    notes: account.notes
+  })
+  return { alias, hermesAuthPath: HERMES_AUTH_FILE }
 }

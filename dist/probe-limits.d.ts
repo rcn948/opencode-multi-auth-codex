@@ -5,8 +5,12 @@ export interface ProbeResult {
     sourceFile?: string;
     error?: string;
     authInvalid?: boolean;
+    usageLimited?: boolean;
+    usageLimitResetAt?: number;
 }
 export declare function isAuthInvalidErrorMessage(message: string | undefined): boolean;
+export declare function isUsageLimitErrorMessage(message: string | undefined): boolean;
+export declare function parseUsageLimitResetAt(message: string | undefined): number | undefined;
 export declare function resolveCodexExecutable(pathValue?: string): {
     command: string;
     pathEnv: string;
